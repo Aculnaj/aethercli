@@ -60,11 +60,14 @@ tar -xzf "$tmp_dir/$asset" -C "$tmp_dir"
 mkdir -p "$install_dir"
 install -m 755 "$tmp_dir/aether" "$install_dir/aether"
 
-echo "Installed aether to ${install_dir}/aether" >&2
+echo "" >&2
+echo "Aether CLI installed successfully." >&2
+echo "Binary: ${install_dir}/aether" >&2
 case ":$PATH:" in
-  *":$install_dir:"*) ;;
+  *":$install_dir:"*)
+    echo "Run: aether setup" >&2
+    ;;
   *)
-    echo "Add ${install_dir} to PATH to run: aether" >&2
+    echo "Add ${install_dir} to PATH, then run: aether setup" >&2
     ;;
 esac
-
