@@ -391,7 +391,7 @@ func TestAutoUpdateCheckUsesDailyThrottle(t *testing.T) {
 	}
 }
 
-func TestUpdateCommandInstallsLatestReleaseAndSupportsTypoAlias(t *testing.T) {
+func TestUpdateCommandInstallsLatestRelease(t *testing.T) {
 	checker := &fakeUpdateChecker{release: update.Release{Version: "v1.2.4"}}
 	installer := &fakeUpdateInstaller{}
 	var out bytes.Buffer
@@ -407,7 +407,7 @@ func TestUpdateCommandInstallsLatestReleaseAndSupportsTypoAlias(t *testing.T) {
 		CurrentVersion:    "v1.2.3",
 		DefaultInstallDir: "/opt/aether/bin",
 	})
-	cmd.SetArgs([]string{"zpdate"})
+	cmd.SetArgs([]string{"update"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
@@ -426,6 +426,21 @@ func TestUpdateCommandInstallsLatestReleaseAndSupportsTypoAlias(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, "Updated aether to v1.2.4") {
 		t.Fatalf("stdout = %q, want update success", got)
+	}
+}
+
+func TestUpdateCommandDoesNotExposeTypoAlias(t *testing.T) {
+	cmd := NewRootCommand(Deps{
+		ConfigPath: filepath.Join(t.TempDir(), "config.json"),
+		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
+		In:         strings.NewReader(""),
+		Out:        &bytes.Buffer{},
+		Err:        &bytes.Buffer{},
+	})
+	cmd.SetArgs([]string{"zpdate"})
+
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), `unknown command "zpdate"`) {
+		t.Fatalf("Execute error = %v, want unknown zpdate command", err)
 	}
 }
 
