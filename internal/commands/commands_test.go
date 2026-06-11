@@ -51,6 +51,8 @@ type fakeAPIClient struct {
 	streamDeltas []string
 	models       []api.Model
 	beforeChat   func()
+	beforeStream func()
+	afterDelta   func()
 }
 
 type fakeUpdateChecker struct {
@@ -101,15 +103,27 @@ func (f *fakeAPIClient) Chat(ctx context.Context, req api.ChatRequest) (api.Chat
 
 func (f *fakeAPIClient) StreamChat(ctx context.Context, req api.ChatRequest, onDelta func(string) error) error {
 	f.chatRequest = req
+	if f.beforeStream != nil {
+		f.beforeStream()
+	}
 	for _, delta := range f.streamDeltas {
 		if err := onDelta(delta); err != nil {
 			return err
+		}
+		if f.afterDelta != nil {
+			f.afterDelta()
 		}
 	}
 	if len(f.streamDeltas) > 0 {
 		return nil
 	}
-	return onDelta(f.chatContent)
+	if err := onDelta(f.chatContent); err != nil {
+		return err
+	}
+	if f.afterDelta != nil {
+		f.afterDelta()
+	}
+	return nil
 }
 
 func (f *fakeAPIClient) Models(ctx context.Context) ([]api.Model, error) {
@@ -307,13 +321,24 @@ func TestAskStreamFlushesEachDelta(t *testing.T) {
 	configPath := writeConfig(t, `{"base_url":"https://api.aetherapi.dev/v1","default_model":"gpt-4o"}`)
 	fakeClient := &fakeAPIClient{streamDeltas: []string{"hel", "lo"}}
 	out := &flushRecordingWriter{}
+	var errOut bytes.Buffer
+	fakeClient.beforeStream = func() {
+		if !strings.Contains(errOut.String(), "\rThinking |") {
+			t.Fatalf("stderr before stream = %q, want spinning thinking indicator", errOut.String())
+		}
+	}
+	fakeClient.afterDelta = func() {
+		if !strings.Contains(errOut.String(), "\r            \r") {
+			t.Fatalf("stderr after first stream delta = %q, want spinner cleanup", errOut.String())
+		}
+	}
 
 	cmd := NewRootCommand(Deps{
 		ConfigPath: configPath,
 		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
 		In:         strings.NewReader(""),
 		Out:        out,
-		Err:        &bytes.Buffer{},
+		Err:        &errOut,
 		ClientFactory: func(baseURL, apiKey string) APIClient {
 			return fakeClient
 		},
