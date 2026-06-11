@@ -108,6 +108,26 @@ func TestStreamChatParsesServerSentEvents(t *testing.T) {
 	}
 }
 
+func TestDefaultHTTPClientDoesNotSetTotalRequestTimeout(t *testing.T) {
+	client := NewClient(ClientOptions{BaseURL: "https://api.aetherapi.dev/v1"})
+
+	httpClient, ok := client.httpClient.(*http.Client)
+	if !ok {
+		t.Fatalf("httpClient = %T, want *http.Client", client.httpClient)
+	}
+	if httpClient.Timeout != 0 {
+		t.Fatalf("Timeout = %v, want 0 so streaming body reads can outlive the request header timeout", httpClient.Timeout)
+	}
+
+	transport, ok := httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want *http.Transport", httpClient.Transport)
+	}
+	if transport.ResponseHeaderTimeout != defaultRequestTimeout {
+		t.Fatalf("ResponseHeaderTimeout = %v, want %v", transport.ResponseHeaderTimeout, defaultRequestTimeout)
+	}
+}
+
 func TestFilterChatModels(t *testing.T) {
 	models := []Model{
 		{ID: "image-only", Endpoint: "/v1/images/generations"},
