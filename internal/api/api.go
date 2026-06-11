@@ -12,6 +12,8 @@ import (
 	"time"
 )
 
+const defaultRequestTimeout = 60 * time.Second
+
 type HTTPDoer interface {
 	Do(req *http.Request) (*http.Response, error)
 }
@@ -59,7 +61,7 @@ type APIError struct {
 func NewClient(opts ClientOptions) *Client {
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 60 * time.Second}
+		httpClient = defaultHTTPClient()
 	}
 	return &Client{
 		baseURL:    strings.TrimRight(opts.BaseURL, "/"),
@@ -69,6 +71,9 @@ func NewClient(opts ClientOptions) *Client {
 }
 
 func (c *Client) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	ctx, cancel := withDefaultTimeout(ctx)
+	defer cancel()
+
 	payload := chatPayloadFromRequest(req, false)
 	resp, err := c.doJSON(ctx, http.MethodPost, "/chat/completions", payload)
 	if err != nil {
@@ -115,6 +120,9 @@ func (c *Client) StreamChat(ctx context.Context, req ChatRequest, onDelta func(d
 }
 
 func (c *Client) Models(ctx context.Context) ([]Model, error) {
+	ctx, cancel := withDefaultTimeout(ctx)
+	defer cancel()
+
 	resp, err := c.doJSON(ctx, http.MethodGet, "/models", nil)
 	if err != nil {
 		return nil, err
@@ -290,6 +298,19 @@ func parseAPIError(resp *http.Response) error {
 		apiErr.Message = strings.TrimSpace(string(data))
 	}
 	return apiErr
+}
+
+func defaultHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = defaultRequestTimeout
+	return &http.Client{Transport: transport}
+}
+
+func withDefaultTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, defaultRequestTimeout)
 }
 
 func normalizeEndpoint(endpoint string) string {

@@ -280,14 +280,18 @@ func runAsk(ctx context.Context, deps Deps, cfg config.Config, apiKey string, re
 	client := deps.ClientFactory(cfg.BaseURL, apiKey)
 	if opts.stream {
 		err := client.StreamChat(ctx, req, func(delta string) error {
-			_, err := fmt.Fprint(deps.Out, delta)
-			return err
+			if _, err := fmt.Fprint(deps.Out, delta); err != nil {
+				return err
+			}
+			return flushIfSupported(deps.Out)
 		})
 		if err != nil {
 			return userFacingError(err)
 		}
-		_, err = fmt.Fprintln(deps.Out)
-		return err
+		if _, err = fmt.Fprintln(deps.Out); err != nil {
+			return err
+		}
+		return flushIfSupported(deps.Out)
 	}
 
 	resp, err := client.Chat(ctx, req)
@@ -381,6 +385,18 @@ func printModels(out io.Writer, models []api.Model) error {
 		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", model.ID, model.OwnedBy, model.Context, model.OurPrice); err != nil {
 			return err
 		}
+	}
+	return writer.Flush()
+}
+
+type flushableWriter interface {
+	Flush() error
+}
+
+func flushIfSupported(out io.Writer) error {
+	writer, ok := out.(flushableWriter)
+	if !ok {
+		return nil
 	}
 	return writer.Flush()
 }

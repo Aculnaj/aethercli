@@ -43,9 +43,10 @@ func (errSecretNotFoundForTest) Is(target error) bool {
 }
 
 type fakeAPIClient struct {
-	chatRequest api.ChatRequest
-	chatContent string
-	models      []api.Model
+	chatRequest  api.ChatRequest
+	chatContent  string
+	streamDeltas []string
+	models       []api.Model
 }
 
 func (f *fakeAPIClient) Chat(ctx context.Context, req api.ChatRequest) (api.ChatResponse, error) {
@@ -55,6 +56,14 @@ func (f *fakeAPIClient) Chat(ctx context.Context, req api.ChatRequest) (api.Chat
 
 func (f *fakeAPIClient) StreamChat(ctx context.Context, req api.ChatRequest, onDelta func(string) error) error {
 	f.chatRequest = req
+	for _, delta := range f.streamDeltas {
+		if err := onDelta(delta); err != nil {
+			return err
+		}
+	}
+	if len(f.streamDeltas) > 0 {
+		return nil
+	}
 	return onDelta(f.chatContent)
 }
 
@@ -175,6 +184,44 @@ func TestRootNoArgsRunsSetupAndAsksPrompt(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "interactive answer") {
 		t.Fatalf("stdout = %q, want answer", out.String())
+	}
+}
+
+type flushRecordingWriter struct {
+	bytes.Buffer
+	flushes int
+}
+
+func (w *flushRecordingWriter) Flush() error {
+	w.flushes++
+	return nil
+}
+
+func TestAskStreamFlushesEachDelta(t *testing.T) {
+	configPath := writeConfig(t, `{"base_url":"https://api.aetherapi.dev/v1","default_model":"gpt-4o"}`)
+	fakeClient := &fakeAPIClient{streamDeltas: []string{"hel", "lo"}}
+	out := &flushRecordingWriter{}
+
+	cmd := NewRootCommand(Deps{
+		ConfigPath: configPath,
+		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
+		In:         strings.NewReader(""),
+		Out:        out,
+		Err:        &bytes.Buffer{},
+		ClientFactory: func(baseURL, apiKey string) APIClient {
+			return fakeClient
+		},
+	})
+	cmd.SetArgs([]string{"ask", "hello", "--stream"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if got := out.String(); got != "hello\n" {
+		t.Fatalf("stdout = %q, want streamed content plus newline", got)
+	}
+	if out.flushes != len(fakeClient.streamDeltas)+1 {
+		t.Fatalf("flushes = %d, want %d", out.flushes, len(fakeClient.streamDeltas)+1)
 	}
 }
 
