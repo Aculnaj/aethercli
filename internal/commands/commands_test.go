@@ -76,13 +76,14 @@ func TestAskUsesExplicitModelAndJSONOutput(t *testing.T) {
 	store := &memorySecretStore{key: "sk-aetherapi-test"}
 	fakeClient := &fakeAPIClient{chatContent: "answer"}
 	var out bytes.Buffer
+	var errOut bytes.Buffer
 
 	cmd := NewRootCommand(Deps{
 		ConfigPath: configPath,
 		Secrets:    store,
 		In:         strings.NewReader(""),
 		Out:        &out,
-		Err:        &bytes.Buffer{},
+		Err:        &errOut,
 		ClientFactory: func(baseURL, apiKey string) APIClient {
 			if baseURL != "https://api.aetherapi.dev/v1" {
 				t.Fatalf("baseURL = %q", baseURL)
@@ -111,6 +112,38 @@ func TestAskUsesExplicitModelAndJSONOutput(t *testing.T) {
 	}
 	if payload["content"] != "answer" {
 		t.Fatalf("content = %q", payload["content"])
+	}
+	if strings.Contains(errOut.String(), "Thinking") {
+		t.Fatalf("stderr = %q, want no thinking indicator for JSON output", errOut.String())
+	}
+}
+
+func TestAskPlainOutputShowsThinkingIndicator(t *testing.T) {
+	configPath := writeConfig(t, `{"base_url":"https://api.aetherapi.dev/v1","default_model":"gpt-4o"}`)
+	fakeClient := &fakeAPIClient{chatContent: "answer"}
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+
+	cmd := NewRootCommand(Deps{
+		ConfigPath: configPath,
+		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
+		In:         strings.NewReader(""),
+		Out:        &out,
+		Err:        &errOut,
+		ClientFactory: func(baseURL, apiKey string) APIClient {
+			return fakeClient
+		},
+	})
+	cmd.SetArgs([]string{"ask", "hello", "--model", "gpt-4.1"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "Thinking...") {
+		t.Fatalf("stderr = %q, want thinking indicator", errOut.String())
+	}
+	if strings.TrimSpace(out.String()) != "answer" {
+		t.Fatalf("stdout = %q, want answer", out.String())
 	}
 }
 
