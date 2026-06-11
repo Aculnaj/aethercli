@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -16,6 +17,8 @@ const (
 	EnvAPIKey      = "AETHER_API_KEY"
 	keyPrefix      = "sk-aetherapi-"
 )
+
+var keyPattern = regexp.MustCompile("sk-aetherapi-[^\\s\"'`]+")
 
 var (
 	ErrNotFound      = errors.New("secret not found")
@@ -78,6 +81,7 @@ func (s KeyringStore) account() string {
 }
 
 func ValidateAPIKey(key string) error {
+	key, _ = normalizeAPIKeyValue(key)
 	if key == "" {
 		return fmt.Errorf("API key is empty")
 	}
@@ -92,12 +96,24 @@ func ValidateAPIKey(key string) error {
 	return nil
 }
 
+func NormalizeAPIKey(key string) (string, error) {
+	key, found := normalizeAPIKeyValue(key)
+	if !found {
+		return "", fmt.Errorf("API key must start with %q", keyPrefix)
+	}
+	if err := ValidateAPIKey(key); err != nil {
+		return "", err
+	}
+	return key, nil
+}
+
 func ResolveAPIKey(store Store) (string, error) {
 	if key := strings.TrimSpace(os.Getenv(EnvAPIKey)); key != "" {
-		if err := ValidateAPIKey(key); err != nil {
+		normalized, err := NormalizeAPIKey(key)
+		if err != nil {
 			return "", err
 		}
-		return key, nil
+		return normalized, nil
 	}
 
 	key, err := store.Get()
@@ -111,8 +127,49 @@ func ResolveAPIKey(store Store) (string, error) {
 	if key == "" {
 		return "", ErrMissingAPIKey
 	}
-	if err := ValidateAPIKey(key); err != nil {
+	normalized, err := NormalizeAPIKey(key)
+	if err != nil {
 		return "", err
 	}
-	return key, nil
+	return normalized, nil
+}
+
+func normalizeAPIKeyValue(key string) (string, bool) {
+	key = strings.TrimSpace(stripInvisiblePasteRunes(key))
+	key = strings.Trim(key, `"'`+"`")
+	key = strings.TrimSpace(key)
+
+	if strings.HasPrefix(key, "export ") {
+		key = strings.TrimSpace(strings.TrimPrefix(key, "export "))
+	}
+	if strings.HasPrefix(key, EnvAPIKey+"=") {
+		key = strings.TrimSpace(strings.TrimPrefix(key, EnvAPIKey+"="))
+		key = strings.Trim(key, `"'`+"`")
+	}
+	if strings.HasPrefix(strings.ToLower(key), "authorization:") {
+		key = strings.TrimSpace(key[len("authorization:"):])
+	}
+	if strings.HasPrefix(strings.ToLower(key), "bearer ") {
+		key = strings.TrimSpace(key[len("bearer "):])
+	}
+	key = strings.Trim(key, `"'`+"`")
+
+	if strings.HasPrefix(key, keyPrefix) {
+		return key, true
+	}
+	if match := keyPattern.FindString(key); match != "" {
+		return match, true
+	}
+	return key, false
+}
+
+func stripInvisiblePasteRunes(value string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\uFEFF', '\u200B', '\u200C', '\u200D':
+			return -1
+		default:
+			return r
+		}
+	}, value)
 }
