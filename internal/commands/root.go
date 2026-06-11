@@ -272,9 +272,8 @@ func newConfigCommand(deps Deps) *cobra.Command {
 func newUpdateCommand(deps Deps) *cobra.Command {
 	var installDir string
 	cmd := &cobra.Command{
-		Use:     "update",
-		Aliases: []string{"zpdate"},
-		Short:   "Update Aether CLI to the latest GitHub release",
+		Use:   "update",
+		Short: "Update Aether CLI to the latest GitHub release",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			release, err := deps.UpdateChecker.Latest(cmd.Context())
 			if err != nil {
