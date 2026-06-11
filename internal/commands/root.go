@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -17,7 +18,10 @@ import (
 	"github.com/Aculnaj/aethercli/internal/config"
 	"github.com/Aculnaj/aethercli/internal/prompt"
 	"github.com/Aculnaj/aethercli/internal/secrets"
+	"github.com/Aculnaj/aethercli/internal/update"
 )
+
+var Version = "dev"
 
 type APIClient interface {
 	Chat(ctx context.Context, req api.ChatRequest) (api.ChatResponse, error)
@@ -28,13 +32,18 @@ type APIClient interface {
 type ClientFactory func(baseURL, apiKey string) APIClient
 
 type Deps struct {
-	ConfigPath    string
-	Secrets       secrets.Store
-	In            io.Reader
-	Out           io.Writer
-	Err           io.Writer
-	ClientFactory ClientFactory
-	StdinHasData  func() bool
+	ConfigPath        string
+	Secrets           secrets.Store
+	In                io.Reader
+	Out               io.Writer
+	Err               io.Writer
+	ClientFactory     ClientFactory
+	StdinHasData      func() bool
+	UpdateChecker     update.Checker
+	UpdateInstaller   update.Installer
+	CurrentVersion    string
+	DefaultInstallDir string
+	Now               func() time.Time
 }
 
 type askOptions struct {
@@ -51,12 +60,17 @@ func NewRootCommand(deps Deps) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "aether",
 		Short:         "AetherAPI command-line client",
+		Version:       deps.CurrentVersion,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			return runAutoUpdateCheck(cmd.Context(), deps, cmd)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInteractive(cmd.Context(), deps)
 		},
 	}
+	root.SetVersionTemplate("{{.Version}}\n")
 	root.SetIn(deps.In)
 	root.SetOut(deps.Out)
 	root.SetErr(deps.Err)
@@ -65,6 +79,7 @@ func NewRootCommand(deps Deps) *cobra.Command {
 	root.AddCommand(newAskCommand(deps))
 	root.AddCommand(newModelsCommand(deps))
 	root.AddCommand(newConfigCommand(deps))
+	root.AddCommand(newUpdateCommand(deps))
 	return root
 }
 
@@ -253,6 +268,40 @@ func newConfigCommand(deps Deps) *cobra.Command {
 	return cmd
 }
 
+func newUpdateCommand(deps Deps) *cobra.Command {
+	var installDir string
+	cmd := &cobra.Command{
+		Use:     "update",
+		Aliases: []string{"zpdate"},
+		Short:   "Update Aether CLI to the latest GitHub release",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			release, err := deps.UpdateChecker.Latest(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("check latest release: %w", err)
+			}
+			if strings.TrimSpace(release.Version) == "" {
+				return fmt.Errorf("latest release did not include a version")
+			}
+
+			targetDir := strings.TrimSpace(installDir)
+			if targetDir == "" {
+				targetDir = deps.DefaultInstallDir
+			}
+			result, err := deps.UpdateInstaller.Install(cmd.Context(), update.InstallOptions{
+				Version:    release.Version,
+				InstallDir: targetDir,
+			})
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(deps.Out, "Updated aether to %s\nBinary: %s\n", release.Version, result.Path)
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&installDir, "install-dir", "", "directory where the aether binary should be installed")
+	return cmd
+}
+
 func runInteractive(ctx context.Context, deps Deps) error {
 	reader := bufio.NewReader(deps.In)
 	cfg, apiKey, err := ensureConfigured(deps, reader, true)
@@ -389,6 +438,64 @@ func printModels(out io.Writer, models []api.Model) error {
 	return writer.Flush()
 }
 
+func runAutoUpdateCheck(ctx context.Context, deps Deps, cmd *cobra.Command) error {
+	if shouldSkipAutoUpdateCheck(deps, cmd) {
+		return nil
+	}
+
+	cfg, err := config.Load(deps.ConfigPath)
+	if err != nil {
+		return nil
+	}
+	if !updateCheckDue(cfg, deps.Now()) {
+		return nil
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	release, err := deps.UpdateChecker.Latest(checkCtx)
+	if err != nil {
+		return nil
+	}
+
+	now := deps.Now().UTC().Format(time.RFC3339)
+	cfg.Update = &config.UpdateState{
+		LastCheckedAt:   now,
+		LastSeenVersion: release.Version,
+	}
+	_ = config.Save(deps.ConfigPath, cfg)
+
+	if update.IsNewerVersion(deps.CurrentVersion, release.Version) {
+		_, _ = fmt.Fprintf(deps.Err, "Update available: aether %s -> %s\nRun `aether update` to install it.\n", deps.CurrentVersion, release.Version)
+	}
+	return nil
+}
+
+func shouldSkipAutoUpdateCheck(deps Deps, cmd *cobra.Command) bool {
+	if deps.CurrentVersion == "" || deps.CurrentVersion == "dev" {
+		return true
+	}
+	if os.Getenv("AETHER_NO_UPDATE_CHECK") != "" {
+		return true
+	}
+	if cmd.Name() == "update" {
+		return true
+	}
+	return false
+}
+
+func updateCheckDue(cfg config.Config, now time.Time) bool {
+	if cfg.Update == nil || strings.TrimSpace(cfg.Update.LastCheckedAt) == "" {
+		return true
+	}
+	lastCheckedAt, err := time.Parse(time.RFC3339, cfg.Update.LastCheckedAt)
+	if err != nil {
+		return true
+	}
+	return now.Sub(lastCheckedAt) >= 24*time.Hour
+}
+
 type flushableWriter interface {
 	Flush() error
 }
@@ -432,6 +539,18 @@ func normalizeDeps(deps Deps) Deps {
 	}
 	if deps.StdinHasData == nil {
 		deps.StdinHasData = stdinHasData
+	}
+	if deps.UpdateChecker == nil {
+		deps.UpdateChecker = update.NewDefaultChecker()
+	}
+	if deps.UpdateInstaller == nil {
+		deps.UpdateInstaller = update.NewDefaultInstaller()
+	}
+	if deps.CurrentVersion == "" {
+		deps.CurrentVersion = Version
+	}
+	if deps.Now == nil {
+		deps.Now = time.Now
 	}
 	return deps
 }
