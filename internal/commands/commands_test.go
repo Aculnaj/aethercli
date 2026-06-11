@@ -454,7 +454,7 @@ func TestUpdateCommandInstallsLatestRelease(t *testing.T) {
 	}
 }
 
-func TestUpdateCommandPrintsNoUpdateFoundWhenLatestIsCurrent(t *testing.T) {
+func TestUpdateCommandPrintsNewestVersionMessageWhenLatestIsCurrent(t *testing.T) {
 	checker := &fakeUpdateChecker{release: update.Release{Version: "v1.2.4"}}
 	installer := &fakeUpdateInstaller{}
 	var out bytes.Buffer
@@ -480,8 +480,36 @@ func TestUpdateCommandPrintsNoUpdateFoundWhenLatestIsCurrent(t *testing.T) {
 	if installer.calls != 0 {
 		t.Fatalf("installer calls = %d, want no install when latest is current", installer.calls)
 	}
-	if got := strings.TrimSpace(out.String()); got != "No update found." {
-		t.Fatalf("stdout = %q, want no update message", got)
+	if got := strings.TrimSpace(out.String()); got != "You already have the newest version." {
+		t.Fatalf("stdout = %q, want newest version message", got)
+	}
+}
+
+func TestUpdateCommandPrintsNewestVersionMessageWhenCurrentIsNewer(t *testing.T) {
+	checker := &fakeUpdateChecker{release: update.Release{Version: "v1.2.4"}}
+	installer := &fakeUpdateInstaller{}
+	var out bytes.Buffer
+
+	cmd := NewRootCommand(Deps{
+		ConfigPath:      filepath.Join(t.TempDir(), "config.json"),
+		Secrets:         &memorySecretStore{key: "sk-aetherapi-test"},
+		In:              strings.NewReader(""),
+		Out:             &out,
+		Err:             &bytes.Buffer{},
+		UpdateChecker:   checker,
+		UpdateInstaller: installer,
+		CurrentVersion:  "v1.2.5",
+	})
+	cmd.SetArgs([]string{"update"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if installer.calls != 0 {
+		t.Fatalf("installer calls = %d, want no install when current is newer", installer.calls)
+	}
+	if got := strings.TrimSpace(out.String()); got != "You already have the newest version." {
+		t.Fatalf("stdout = %q, want newest version message", got)
 	}
 }
 
