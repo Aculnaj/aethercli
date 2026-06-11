@@ -429,6 +429,37 @@ func TestUpdateCommandInstallsLatestRelease(t *testing.T) {
 	}
 }
 
+func TestUpdateCommandPrintsNoUpdateFoundWhenLatestIsCurrent(t *testing.T) {
+	checker := &fakeUpdateChecker{release: update.Release{Version: "v1.2.4"}}
+	installer := &fakeUpdateInstaller{}
+	var out bytes.Buffer
+
+	cmd := NewRootCommand(Deps{
+		ConfigPath:      filepath.Join(t.TempDir(), "config.json"),
+		Secrets:         &memorySecretStore{key: "sk-aetherapi-test"},
+		In:              strings.NewReader(""),
+		Out:             &out,
+		Err:             &bytes.Buffer{},
+		UpdateChecker:   checker,
+		UpdateInstaller: installer,
+		CurrentVersion:  "v1.2.4",
+	})
+	cmd.SetArgs([]string{"update"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if checker.calls != 1 {
+		t.Fatalf("update checks = %d, want 1", checker.calls)
+	}
+	if installer.calls != 0 {
+		t.Fatalf("installer calls = %d, want no install when latest is current", installer.calls)
+	}
+	if got := strings.TrimSpace(out.String()); got != "No update found." {
+		t.Fatalf("stdout = %q, want no update message", got)
+	}
+}
+
 func TestUpdateCommandDoesNotExposeTypoAlias(t *testing.T) {
 	cmd := NewRootCommand(Deps{
 		ConfigPath: filepath.Join(t.TempDir(), "config.json"),

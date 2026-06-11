@@ -282,6 +282,10 @@ func newUpdateCommand(deps Deps) *cobra.Command {
 			if strings.TrimSpace(release.Version) == "" {
 				return fmt.Errorf("latest release did not include a version")
 			}
+			if deps.CurrentVersion != "dev" && !update.IsNewerVersion(deps.CurrentVersion, release.Version) {
+				_, err = fmt.Fprintln(deps.Out, "No update found.")
+				return err
+			}
 
 			targetDir := strings.TrimSpace(installDir)
 			if targetDir == "" {
