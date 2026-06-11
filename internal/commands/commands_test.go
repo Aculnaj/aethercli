@@ -148,7 +148,7 @@ func TestRootNoArgsRunsSetupAndAsksPrompt(t *testing.T) {
 		ConfigPath: filepath.Join(t.TempDir(), "config.json"),
 		Secrets:    store,
 		In: strings.NewReader(strings.Join([]string{
-			"sk-aetherapi-test",
+			"Bearer sk-aetherapi-test",
 			"claude-sonnet-4-6",
 			"hello interactively",
 			"",
@@ -165,7 +165,7 @@ func TestRootNoArgsRunsSetupAndAsksPrompt(t *testing.T) {
 		t.Fatalf("Execute returned error: %v", err)
 	}
 	if store.key != "sk-aetherapi-test" {
-		t.Fatalf("stored key = %q", store.key)
+		t.Fatalf("stored key = %q, want normalized key", store.key)
 	}
 	if fakeClient.chatRequest.Model != "claude-sonnet-4-6" {
 		t.Fatalf("model = %q", fakeClient.chatRequest.Model)

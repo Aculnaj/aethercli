@@ -326,7 +326,8 @@ func runSetup(deps Deps, reader *bufio.Reader) (config.Config, string, error) {
 	if err != nil {
 		return config.Config{}, "", err
 	}
-	if err := secrets.ValidateAPIKey(apiKey); err != nil {
+	apiKey, err = secrets.NormalizeAPIKey(apiKey)
+	if err != nil {
 		return config.Config{}, "", err
 	}
 	if err := deps.Secrets.Set(apiKey); err != nil {

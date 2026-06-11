@@ -55,6 +55,32 @@ func TestValidateAPIKeyFormat(t *testing.T) {
 	}
 }
 
+func TestNormalizeAPIKeyAcceptsCommonPastedForms(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "quoted key", input: `"sk-aetherapi-abcdefghijklmnopqrstuvwxyz123456"`},
+		{name: "bearer token", input: "Bearer sk-aetherapi-abcdefghijklmnopqrstuvwxyz123456"},
+		{name: "authorization header", input: "Authorization: Bearer sk-aetherapi-abcdefghijklmnopqrstuvwxyz123456"},
+		{name: "environment assignment", input: "AETHER_API_KEY=sk-aetherapi-abcdefghijklmnopqrstuvwxyz123456"},
+		{name: "exported environment assignment", input: "export AETHER_API_KEY='sk-aetherapi-abcdefghijklmnopqrstuvwxyz123456'"},
+		{name: "zero width prefix", input: "\uFEFF\u200Bsk-aetherapi-abcdefghijklmnopqrstuvwxyz123456"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := NormalizeAPIKey(tt.input)
+			if err != nil {
+				t.Fatalf("NormalizeAPIKey returned error: %v", err)
+			}
+			if got != "sk-aetherapi-abcdefghijklmnopqrstuvwxyz123456" {
+				t.Fatalf("NormalizeAPIKey = %q", got)
+			}
+		})
+	}
+}
+
 func TestResolveAPIKeyPrefersEnvironment(t *testing.T) {
 	const envKey = "sk-aetherapi-from-env"
 	store := &fakeStore{value: "sk-aetherapi-from-keychain"}
