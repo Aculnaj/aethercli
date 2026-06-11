@@ -332,12 +332,21 @@ func runAsk(ctx context.Context, deps Deps, cfg config.Config, apiKey string, re
 
 	client := deps.ClientFactory(cfg.BaseURL, apiKey)
 	if opts.stream {
+		stopThinking := startThinkingSpinner(deps.Err, thinkingSpinnerInterval)
+		firstDelta := true
 		err := client.StreamChat(ctx, req, func(delta string) error {
+			if firstDelta {
+				stopThinking()
+				firstDelta = false
+			}
 			if _, err := fmt.Fprint(deps.Out, delta); err != nil {
 				return err
 			}
 			return flushIfSupported(deps.Out)
 		})
+		if firstDelta {
+			stopThinking()
+		}
 		if err != nil {
 			return userFacingError(err)
 		}
