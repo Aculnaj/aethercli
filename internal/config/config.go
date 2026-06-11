@@ -10,8 +10,14 @@ import (
 const DefaultBaseURL = "https://api.aetherapi.dev/v1"
 
 type Config struct {
-	BaseURL      string `json:"base_url"`
-	DefaultModel string `json:"default_model,omitempty"`
+	BaseURL      string       `json:"base_url"`
+	DefaultModel string       `json:"default_model,omitempty"`
+	Update       *UpdateState `json:"update,omitempty"`
+}
+
+type UpdateState struct {
+	LastCheckedAt   string `json:"last_checked_at,omitempty"`
+	LastSeenVersion string `json:"last_seen_version,omitempty"`
 }
 
 func DefaultPath() (string, error) {

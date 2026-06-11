@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Aculnaj/aethercli/internal/api"
+	"github.com/Aculnaj/aethercli/internal/update"
 )
 
 type memorySecretStore struct {
@@ -47,6 +49,27 @@ type fakeAPIClient struct {
 	chatContent  string
 	streamDeltas []string
 	models       []api.Model
+}
+
+type fakeUpdateChecker struct {
+	release update.Release
+	calls   int
+}
+
+func (f *fakeUpdateChecker) Latest(ctx context.Context) (update.Release, error) {
+	f.calls++
+	return f.release, nil
+}
+
+type fakeUpdateInstaller struct {
+	options update.InstallOptions
+	calls   int
+}
+
+func (f *fakeUpdateInstaller) Install(ctx context.Context, options update.InstallOptions) (update.InstallResult, error) {
+	f.calls++
+	f.options = options
+	return update.InstallResult{Path: "/tmp/aether"}, nil
 }
 
 func (f *fakeAPIClient) Chat(ctx context.Context, req api.ChatRequest) (api.ChatResponse, error) {
@@ -255,6 +278,104 @@ func TestAskStreamFlushesEachDelta(t *testing.T) {
 	}
 	if out.flushes != len(fakeClient.streamDeltas)+1 {
 		t.Fatalf("flushes = %d, want %d", out.flushes, len(fakeClient.streamDeltas)+1)
+	}
+}
+
+func TestAutoUpdateCheckPrintsHintWhenReleaseIsNewer(t *testing.T) {
+	configPath := writeConfig(t, `{"base_url":"https://api.aetherapi.dev/v1","default_model":"gpt-4o"}`)
+	checker := &fakeUpdateChecker{release: update.Release{Version: "v1.2.4"}}
+	fakeClient := &fakeAPIClient{models: []api.Model{{ID: "chat", Endpoint: "/v1/chat/completions"}}}
+	var errOut bytes.Buffer
+
+	cmd := NewRootCommand(Deps{
+		ConfigPath:     configPath,
+		Secrets:        &memorySecretStore{key: "sk-aetherapi-test"},
+		In:             strings.NewReader(""),
+		Out:            &bytes.Buffer{},
+		Err:            &errOut,
+		ClientFactory:  func(baseURL, apiKey string) APIClient { return fakeClient },
+		UpdateChecker:  checker,
+		CurrentVersion: "v1.2.3",
+		Now:            func() time.Time { return time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC) },
+	})
+	cmd.SetArgs([]string{"models"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if checker.calls != 1 {
+		t.Fatalf("update checks = %d, want 1", checker.calls)
+	}
+	if got := errOut.String(); !strings.Contains(got, "Update available: aether v1.2.3 -> v1.2.4") || !strings.Contains(got, "aether update") {
+		t.Fatalf("stderr = %q, want update hint", got)
+	}
+}
+
+func TestAutoUpdateCheckUsesDailyThrottle(t *testing.T) {
+	configPath := writeConfig(t, `{
+  "base_url":"https://api.aetherapi.dev/v1",
+  "default_model":"gpt-4o",
+  "update":{"last_checked_at":"2026-06-11T00:00:00Z","last_seen_version":"v1.2.4"}
+}`)
+	checker := &fakeUpdateChecker{release: update.Release{Version: "v1.2.5"}}
+	fakeClient := &fakeAPIClient{models: []api.Model{{ID: "chat", Endpoint: "/v1/chat/completions"}}}
+
+	cmd := NewRootCommand(Deps{
+		ConfigPath:     configPath,
+		Secrets:        &memorySecretStore{key: "sk-aetherapi-test"},
+		In:             strings.NewReader(""),
+		Out:            &bytes.Buffer{},
+		Err:            &bytes.Buffer{},
+		ClientFactory:  func(baseURL, apiKey string) APIClient { return fakeClient },
+		UpdateChecker:  checker,
+		CurrentVersion: "v1.2.3",
+		Now:            func() time.Time { return time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC) },
+	})
+	cmd.SetArgs([]string{"models"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if checker.calls != 0 {
+		t.Fatalf("update checks = %d, want throttled check to be skipped", checker.calls)
+	}
+}
+
+func TestUpdateCommandInstallsLatestReleaseAndSupportsTypoAlias(t *testing.T) {
+	checker := &fakeUpdateChecker{release: update.Release{Version: "v1.2.4"}}
+	installer := &fakeUpdateInstaller{}
+	var out bytes.Buffer
+
+	cmd := NewRootCommand(Deps{
+		ConfigPath:        filepath.Join(t.TempDir(), "config.json"),
+		Secrets:           &memorySecretStore{key: "sk-aetherapi-test"},
+		In:                strings.NewReader(""),
+		Out:               &out,
+		Err:               &bytes.Buffer{},
+		UpdateChecker:     checker,
+		UpdateInstaller:   installer,
+		CurrentVersion:    "v1.2.3",
+		DefaultInstallDir: "/opt/aether/bin",
+	})
+	cmd.SetArgs([]string{"zpdate"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if checker.calls != 1 {
+		t.Fatalf("update checks = %d, want 1", checker.calls)
+	}
+	if installer.calls != 1 {
+		t.Fatalf("installer calls = %d, want 1", installer.calls)
+	}
+	if installer.options.Version != "v1.2.4" {
+		t.Fatalf("install version = %q, want v1.2.4", installer.options.Version)
+	}
+	if installer.options.InstallDir != "/opt/aether/bin" {
+		t.Fatalf("install dir = %q, want default install dir", installer.options.InstallDir)
+	}
+	if got := out.String(); !strings.Contains(got, "Updated aether to v1.2.4") {
+		t.Fatalf("stdout = %q, want update success", got)
 	}
 }
 

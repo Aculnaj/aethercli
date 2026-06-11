@@ -90,6 +90,14 @@ aether models
 aether models --json
 ```
 
+Update the CLI when a new GitHub release is available:
+
+```sh
+aether update
+```
+
+Release builds also check for updates automatically at most once per day and print a hint when a newer version exists.
+
 Manage config:
 
 ```sh
@@ -119,4 +127,3 @@ Create release artifacts locally if GoReleaser is installed:
 ```sh
 goreleaser release --snapshot --clean
 ```
-
