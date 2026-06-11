@@ -49,6 +49,7 @@ type fakeAPIClient struct {
 	chatContent  string
 	streamDeltas []string
 	models       []api.Model
+	beforeChat   func()
 }
 
 type fakeUpdateChecker struct {
@@ -73,6 +74,9 @@ func (f *fakeUpdateInstaller) Install(ctx context.Context, options update.Instal
 }
 
 func (f *fakeAPIClient) Chat(ctx context.Context, req api.ChatRequest) (api.ChatResponse, error) {
+	if f.beforeChat != nil {
+		f.beforeChat()
+	}
 	f.chatRequest = req
 	return api.ChatResponse{Model: req.Model, Content: f.chatContent}, nil
 }
@@ -146,6 +150,11 @@ func TestAskPlainOutputShowsThinkingIndicator(t *testing.T) {
 	fakeClient := &fakeAPIClient{chatContent: "answer"}
 	var out bytes.Buffer
 	var errOut bytes.Buffer
+	fakeClient.beforeChat = func() {
+		if !strings.Contains(errOut.String(), "Thinking...") {
+			t.Fatalf("stderr before chat = %q, want thinking indicator", errOut.String())
+		}
+	}
 
 	cmd := NewRootCommand(Deps{
 		ConfigPath: configPath,
