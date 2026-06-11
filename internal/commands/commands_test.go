@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -65,6 +66,23 @@ func (f *fakeUpdateChecker) Latest(ctx context.Context) (update.Release, error) 
 type fakeUpdateInstaller struct {
 	options update.InstallOptions
 	calls   int
+}
+
+type lockedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
 }
 
 func (f *fakeUpdateInstaller) Install(ctx context.Context, options update.InstallOptions) (update.InstallResult, error) {
@@ -151,8 +169,8 @@ func TestAskPlainOutputShowsThinkingIndicator(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer
 	fakeClient.beforeChat = func() {
-		if !strings.Contains(errOut.String(), "Thinking...") {
-			t.Fatalf("stderr before chat = %q, want thinking indicator", errOut.String())
+		if !strings.Contains(errOut.String(), "\rThinking |") {
+			t.Fatalf("stderr before chat = %q, want spinning thinking indicator", errOut.String())
 		}
 	}
 
@@ -171,11 +189,34 @@ func TestAskPlainOutputShowsThinkingIndicator(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	if !strings.Contains(errOut.String(), "Thinking...") {
-		t.Fatalf("stderr = %q, want thinking indicator", errOut.String())
+	if !strings.Contains(errOut.String(), "\rThinking |") {
+		t.Fatalf("stderr = %q, want spinning thinking indicator", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "\r            \r") {
+		t.Fatalf("stderr = %q, want spinner cleanup", errOut.String())
 	}
 	if strings.TrimSpace(out.String()) != "answer" {
 		t.Fatalf("stdout = %q, want answer", out.String())
+	}
+}
+
+func TestThinkingSpinnerRotatesUntilStopped(t *testing.T) {
+	errOut := &lockedBuffer{}
+
+	stop := startThinkingSpinner(errOut, time.Millisecond)
+	deadline := time.After(100 * time.Millisecond)
+	for !strings.Contains(errOut.String(), "\rThinking /") {
+		select {
+		case <-deadline:
+			t.Fatalf("stderr = %q, want spinner rotation", errOut.String())
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	stop()
+
+	if !strings.Contains(errOut.String(), "\r            \r") {
+		t.Fatalf("stderr = %q, want spinner cleanup", errOut.String())
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -343,13 +344,13 @@ func runAsk(ctx context.Context, deps Deps, cfg config.Config, apiKey string, re
 		return flushIfSupported(deps.Out)
 	}
 
+	stopThinking := func() {}
 	if !opts.jsonOut {
-		if _, err := fmt.Fprintln(deps.Err, "Thinking..."); err != nil {
-			return err
-		}
+		stopThinking = startThinkingSpinner(deps.Err, thinkingSpinnerInterval)
 	}
 
 	resp, err := client.Chat(ctx, req)
+	stopThinking()
 	if err != nil {
 		return userFacingError(err)
 	}
@@ -504,6 +505,54 @@ func updateCheckDue(cfg config.Config, now time.Time) bool {
 
 type flushableWriter interface {
 	Flush() error
+}
+
+const thinkingSpinnerInterval = 120 * time.Millisecond
+
+var thinkingSpinnerFrames = []string{"|", "/", "-", "\\"}
+
+func startThinkingSpinner(out io.Writer, interval time.Duration) func() {
+	if out == nil {
+		return func() {}
+	}
+	if interval <= 0 {
+		interval = thinkingSpinnerInterval
+	}
+
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	var once sync.Once
+	frame := 0
+
+	writeFrame := func() {
+		_, _ = fmt.Fprintf(out, "\rThinking %s", thinkingSpinnerFrames[frame%len(thinkingSpinnerFrames)])
+		_ = flushIfSupported(out)
+		frame++
+	}
+
+	writeFrame()
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				writeFrame()
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	return func() {
+		once.Do(func() {
+			close(done)
+			<-stopped
+			_, _ = fmt.Fprint(out, "\r            \r")
+			_ = flushIfSupported(out)
+		})
+	}
 }
 
 func flushIfSupported(out io.Writer) error {
