@@ -290,6 +290,12 @@ func runAsk(ctx context.Context, deps Deps, cfg config.Config, apiKey string, re
 		return err
 	}
 
+	if !opts.jsonOut {
+		if _, err := fmt.Fprintln(deps.Err, "Thinking..."); err != nil {
+			return err
+		}
+	}
+
 	resp, err := client.Chat(ctx, req)
 	if err != nil {
 		return userFacingError(err)
