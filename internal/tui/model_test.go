@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/Aculnaj/aethercli/internal/api"
 	"github.com/Aculnaj/aethercli/internal/config"
 	"github.com/Aculnaj/aethercli/internal/session"
@@ -76,6 +78,81 @@ func TestModelsCommandFiltersChatModelsAndSelectionSetsActiveModel(t *testing.T)
 	}
 	if model.mode != modeChat {
 		t.Fatalf("mode = %v, want chat mode after selection", model.mode)
+	}
+}
+
+func TestModelsCommandSearchesAndScrollsLongModelList(t *testing.T) {
+	models := []api.Model{}
+	for i := range 30 {
+		id := "chat-model-" + string(rune('a'+i%26))
+		if i == 20 {
+			id = "claude-sonnet-4-6"
+		}
+		models = append(models, api.Model{ID: id, Endpoint: "/v1/chat/completions"})
+	}
+	model := newTestModel(t, &fakeClient{models: models})
+	model.height = 9
+
+	if err := model.showModels(context.Background()); err != nil {
+		t.Fatalf("showModels returned error: %v", err)
+	}
+	for i := 0; i < 20; i++ {
+		model.updateModelsKey(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	rendered := model.renderModels()
+	if strings.Contains(rendered, "chat-model-a") || !strings.Contains(rendered, "claude-sonnet-4-6") {
+		t.Fatalf("rendered models = %q, want scrolled window around selected model", rendered)
+	}
+
+	for _, r := range "sonnet" {
+		model.updateModelsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	filtered := model.filteredModels()
+	if len(filtered) != 1 || filtered[0].ID != "claude-sonnet-4-6" {
+		t.Fatalf("filtered models = %#v, want sonnet match only", filtered)
+	}
+	if got := model.renderModels(); !strings.Contains(got, "Search: sonnet") || strings.Contains(got, "chat-model-b") {
+		t.Fatalf("rendered filtered models = %q, want search UI with filtered result", got)
+	}
+}
+
+func TestModelCommandWithoutArgumentShowsCurrentModelDetailsAndCanSwitch(t *testing.T) {
+	client := &fakeClient{models: []api.Model{
+		{
+			ID:       "chat-a",
+			Endpoint: "/v1/chat/completions",
+			OwnedBy:  "Provider A",
+			Context:  "64k",
+			OurPrice: "$1 / 1M input tokens, $2 / 1M output tokens",
+		},
+		{
+			ID:       "chat-b",
+			Endpoint: "/v1/chat/completions",
+			OwnedBy:  "Provider B",
+			Context:  "200k",
+			OurPrice: "$3 / 1M input tokens, $6 / 1M output tokens",
+		},
+	}}
+	model := newTestModel(t, client)
+	model.activeModel = "chat-b"
+
+	if err := model.showCurrentModelDetails(context.Background()); err != nil {
+		t.Fatalf("showCurrentModelDetails returned error: %v", err)
+	}
+	if model.modelCursor != 1 {
+		t.Fatalf("model cursor = %d, want current model selected", model.modelCursor)
+	}
+	rendered := model.renderModels()
+	for _, want := range []string{"Current model", "chat-b", "Provider B", "200k", "$3 / 1M input tokens"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered model detail = %q, want %q", rendered, want)
+		}
+	}
+
+	model.modelCursor = 0
+	model.selectCurrentModel()
+	if model.activeModel != "chat-a" {
+		t.Fatalf("active model = %q, want switched model", model.activeModel)
 	}
 }
 
@@ -161,13 +238,45 @@ func TestSessionCommandsLoadResumeNewClearHelpAndQuitState(t *testing.T) {
 	}
 
 	model.showHelp()
-	if model.mode != modeHelp || !strings.Contains(model.status, "/models") {
-		t.Fatalf("help mode=%v status=%q, want help command summary", model.mode, model.status)
+	if model.mode != modeChat || !model.helpVisible || !strings.Contains(model.status, "/models") {
+		t.Fatalf("help mode=%v visible=%v status=%q, want non-blocking help", model.mode, model.helpVisible, model.status)
+	}
+	updated, _ := model.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	model = updated.(*Model)
+	if model.helpVisible || model.input.Value() != "h" {
+		t.Fatalf("help visible=%v input=%q, want help dismissed and input accepted", model.helpVisible, model.input.Value())
 	}
 
 	model.requestQuit()
 	if !model.quitting {
 		t.Fatalf("quitting = false, want true")
+	}
+}
+
+func TestSlashInputShowsFilteredCommandSuggestions(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+
+	model.input.SetValue("/")
+	rendered := model.View()
+	for _, want := range []string{"/models", "/model <id>", "/help"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("view = %q, want slash suggestion %q", rendered, want)
+		}
+	}
+
+	model.input.SetValue("/mo")
+	rendered = model.View()
+	if !strings.Contains(rendered, "/models") || !strings.Contains(rendered, "/model <id>") || strings.Contains(rendered, "/quit") {
+		t.Fatalf("view = %q, want filtered model suggestions only", rendered)
+	}
+
+	model.input.SetValue("/mo")
+	updated, _ := model.updateKey(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(*Model)
+	updated, _ = model.updateKey(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(*Model)
+	if model.input.Value() != "/model " {
+		t.Fatalf("input = %q, want selected slash suggestion completed", model.input.Value())
 	}
 }
 
