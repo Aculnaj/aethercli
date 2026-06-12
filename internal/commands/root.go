@@ -19,6 +19,7 @@ import (
 	"github.com/Aculnaj/aethercli/internal/config"
 	"github.com/Aculnaj/aethercli/internal/prompt"
 	"github.com/Aculnaj/aethercli/internal/secrets"
+	aethertui "github.com/Aculnaj/aethercli/internal/tui"
 	"github.com/Aculnaj/aethercli/internal/update"
 )
 
@@ -31,6 +32,22 @@ type APIClient interface {
 }
 
 type ClientFactory func(baseURL, apiKey string) APIClient
+
+type TUIRunner func(ctx context.Context, opts TUIOptions) error
+
+type TUIOptions struct {
+	ConfigPath    string
+	Config        config.Config
+	APIKey        string
+	Model         string
+	Resume        bool
+	SessionID     string
+	In            io.Reader
+	Out           io.Writer
+	Err           io.Writer
+	ClientFactory ClientFactory
+	Now           func() time.Time
+}
 
 type Deps struct {
 	ConfigPath        string
@@ -45,6 +62,7 @@ type Deps struct {
 	CurrentVersion    string
 	DefaultInstallDir string
 	Now               func() time.Time
+	TUIRunner         TUIRunner
 }
 
 type askOptions struct {
@@ -82,6 +100,7 @@ func NewRootCommand(deps Deps) *cobra.Command {
 	root.AddCommand(newSetupCommand(deps))
 	root.AddCommand(newAskCommand(deps))
 	root.AddCommand(newChatCommand(deps))
+	root.AddCommand(newTUICommand(deps))
 	root.AddCommand(newSessionsCommand(deps))
 	root.AddCommand(newModelsCommand(deps))
 	root.AddCommand(newConfigCommand(deps))
@@ -338,6 +357,29 @@ func runInteractive(ctx context.Context, deps Deps) error {
 		Prompt: resolvedPrompt,
 	}
 	return runAsk(ctx, deps, cfg, apiKey, req, askOptions{})
+}
+
+func runTUI(ctx context.Context, deps Deps, cfg config.Config, apiKey string, opts chatOptions) error {
+	model := strings.TrimSpace(opts.model)
+	if model == "" {
+		model = strings.TrimSpace(cfg.DefaultModel)
+	}
+	if model == "" {
+		return fmt.Errorf("missing model: pass --model or run `aether setup`")
+	}
+	return deps.TUIRunner(ctx, TUIOptions{
+		ConfigPath:    deps.ConfigPath,
+		Config:        cfg,
+		APIKey:        apiKey,
+		Model:         model,
+		Resume:        opts.resume,
+		SessionID:     opts.sessionID,
+		In:            deps.In,
+		Out:           deps.Out,
+		Err:           deps.Err,
+		ClientFactory: deps.ClientFactory,
+		Now:           deps.Now,
+	})
 }
 
 func runAsk(ctx context.Context, deps Deps, cfg config.Config, apiKey string, req api.ChatRequest, opts askOptions) error {
@@ -634,7 +676,28 @@ func normalizeDeps(deps Deps) Deps {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
+	if deps.TUIRunner == nil {
+		deps.TUIRunner = defaultTUIRunner
+	}
 	return deps
+}
+
+func defaultTUIRunner(ctx context.Context, opts TUIOptions) error {
+	return aethertui.Run(ctx, aethertui.Options{
+		ConfigPath: opts.ConfigPath,
+		Config:     opts.Config,
+		APIKey:     opts.APIKey,
+		Model:      opts.Model,
+		Resume:     opts.Resume,
+		SessionID:  opts.SessionID,
+		In:         opts.In,
+		Out:        opts.Out,
+		Err:        opts.Err,
+		ClientFactory: func(baseURL, apiKey string) aethertui.Client {
+			return opts.ClientFactory(baseURL, apiKey)
+		},
+		Now: opts.Now,
+	})
 }
 
 func stdinHasData() bool {
