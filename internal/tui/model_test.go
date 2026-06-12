@@ -205,6 +205,71 @@ func TestModelCommandWithoutArgumentShowsCurrentModelDetailsAndCanSwitch(t *test
 	}
 }
 
+func TestMouseWheelScrollsChatViewport(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	model.viewport.Height = 4
+	for i := range 20 {
+		model.messages = append(model.messages, session.Message{Role: "assistant", Content: "message line " + string(rune('a'+i))})
+	}
+	model.refreshViewport()
+	bottomOffset := model.viewport.YOffset
+	if bottomOffset == 0 {
+		t.Fatalf("viewport offset = 0, want scrollable content")
+	}
+
+	updated, _ := model.Update(tea.MouseMsg{Type: tea.MouseWheelUp, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	model = updated.(*Model)
+	if model.viewport.YOffset >= bottomOffset {
+		t.Fatalf("viewport offset = %d, want less than bottom offset %d after wheel up", model.viewport.YOffset, bottomOffset)
+	}
+}
+
+func TestMouseWheelScrollsModelList(t *testing.T) {
+	models := make([]api.Model, 0, 20)
+	for i := range 20 {
+		models = append(models, api.Model{ID: "chat-model-" + string(rune('a'+i)), Endpoint: "/v1/chat/completions"})
+	}
+	model := newTestModel(t, &fakeClient{models: models})
+	model.height = 10
+	if err := model.showModels(context.Background()); err != nil {
+		t.Fatalf("showModels returned error: %v", err)
+	}
+
+	updated, _ := model.Update(tea.MouseMsg{Type: tea.MouseWheelDown, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	model = updated.(*Model)
+	if model.modelCursor == 0 || model.modelScroll == 0 {
+		t.Fatalf("model cursor=%d scroll=%d, want mouse wheel to move list", model.modelCursor, model.modelScroll)
+	}
+
+	updated, _ = model.Update(tea.MouseMsg{Type: tea.MouseWheelUp, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	model = updated.(*Model)
+	if model.modelCursor != 0 || model.modelScroll != 0 {
+		t.Fatalf("model cursor=%d scroll=%d, want wheel up to return to top", model.modelCursor, model.modelScroll)
+	}
+}
+
+func TestMouseClickSelectsModelRow(t *testing.T) {
+	model := newTestModel(t, &fakeClient{models: []api.Model{
+		{ID: "chat-a", Endpoint: "/v1/chat/completions"},
+		{ID: "chat-b", Endpoint: "/v1/chat/completions"},
+		{ID: "chat-c", Endpoint: "/v1/chat/completions"},
+	}})
+	if err := model.showModels(context.Background()); err != nil {
+		t.Fatalf("showModels returned error: %v", err)
+	}
+
+	updated, _ := model.Update(tea.MouseMsg{
+		Type:   tea.MouseLeft,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+		Y:      model.modelRowsStartY() + 1,
+	})
+	model = updated.(*Model)
+	if model.activeModel != "chat-b" || model.mode != modeChat {
+		t.Fatalf("active model=%q mode=%v, want clicked row selected", model.activeModel, model.mode)
+	}
+}
+
 func TestSendPromptStreamsDeltasAndSavesAfterSuccess(t *testing.T) {
 	client := &fakeClient{streamDeltas: []string{"hel", "lo"}}
 	model := newTestModel(t, client)
@@ -357,6 +422,44 @@ func TestSessionCommandsLoadResumeNewClearHelpAndQuitState(t *testing.T) {
 	model.requestQuit()
 	if !model.quitting {
 		t.Fatalf("quitting = false, want true")
+	}
+}
+
+func TestMouseWheelAndClickSelectSessions(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	first, err := model.store.New("gpt-4o", "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := model.store.Save(first); err != nil {
+		t.Fatal(err)
+	}
+	second, err := model.store.New("gpt-4o", "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := model.store.Save(second); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := model.showSessions(); err != nil {
+		t.Fatalf("showSessions returned error: %v", err)
+	}
+	updated, _ := model.Update(tea.MouseMsg{Type: tea.MouseWheelDown, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	model = updated.(*Model)
+	if model.sessionCursor != 1 {
+		t.Fatalf("session cursor = %d, want wheel down to move selection", model.sessionCursor)
+	}
+
+	updated, _ = model.Update(tea.MouseMsg{
+		Type:   tea.MouseLeft,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+		Y:      model.sessionRowsStartY(),
+	})
+	model = updated.(*Model)
+	if model.sessionID != model.sessions[0].ID || model.mode != modeChat {
+		t.Fatalf("session id=%q mode=%v, want clicked session loaded", model.sessionID, model.mode)
 	}
 }
 

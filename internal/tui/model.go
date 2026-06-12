@@ -67,6 +67,7 @@ type Model struct {
 	modelDetail   bool
 	sessions      []session.Summary
 	sessionCursor int
+	sessionScroll int
 	mode          mode
 	status        string
 	helpVisible   bool
@@ -114,7 +115,7 @@ func Run(ctx context.Context, opts Options) error {
 		model.loadSession(item)
 	}
 
-	programOptions := []tea.ProgramOption{tea.WithContext(ctx)}
+	programOptions := []tea.ProgramOption{tea.WithContext(ctx), tea.WithMouseCellMotion()}
 	if opts.In != nil {
 		programOptions = append(programOptions, tea.WithInput(opts.In))
 	}
@@ -178,6 +179,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.Height = max(5, msg.Height-9)
 		m.refreshViewport()
 		return m, nil
+	case tea.MouseMsg:
+		return m.updateMouse(msg)
 	case tea.KeyMsg:
 		return m.updateKey(msg)
 	case streamDeltaMsg:
@@ -324,15 +327,71 @@ func (m *Model) updateModelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) updateSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
-		if m.sessionCursor > 0 {
-			m.sessionCursor--
-		}
+		m.moveSessionCursor(-1)
 	case "down", "j":
-		if m.sessionCursor < len(m.sessions)-1 {
-			m.sessionCursor++
-		}
+		m.moveSessionCursor(1)
 	case "enter":
 		if len(m.sessions) > 0 {
+			if err := m.resumeSession(m.sessions[m.sessionCursor].ID); err != nil {
+				m.status = err.Error()
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if msg.Action != tea.MouseActionPress {
+		return m, nil
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		return m.handleMouseWheel(-1)
+	case tea.MouseButtonWheelDown:
+		return m.handleMouseWheel(1)
+	case tea.MouseButtonLeft:
+		return m.handleMouseClick(msg)
+	default:
+		return m, nil
+	}
+}
+
+func (m *Model) handleMouseWheel(direction int) (tea.Model, tea.Cmd) {
+	if direction == 0 {
+		return m, nil
+	}
+	switch {
+	case m.mode == modeModels:
+		m.moveModelCursor(direction * max(3, m.modelListHeight()))
+		return m, nil
+	case m.mode == modeSessions:
+		m.moveSessionCursor(direction * max(3, m.sessionListHeight()))
+		return m, nil
+	case m.mode == modeChat && !m.helpVisible && !m.usageVisible:
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(tea.MouseMsg{
+			Type:   mouseWheelType(direction),
+			Button: mouseWheelButton(direction),
+			Action: tea.MouseActionPress,
+		})
+		return m, cmd
+	default:
+		return m, nil
+	}
+}
+
+func (m *Model) handleMouseClick(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	switch m.mode {
+	case modeModels:
+		if index, ok := m.modelIndexAtY(msg.Y); ok {
+			m.modelCursor = index
+			m.syncModelScroll()
+			m.selectCurrentModel()
+		}
+	case modeSessions:
+		if index, ok := m.sessionIndexAtY(msg.Y); ok {
+			m.sessionCursor = index
+			m.syncSessionScroll()
 			if err := m.resumeSession(m.sessions[m.sessionCursor].ID); err != nil {
 				m.status = err.Error()
 			}
@@ -486,6 +545,7 @@ func (m *Model) showSessions() error {
 	}
 	m.sessions = summaries
 	m.sessionCursor = 0
+	m.sessionScroll = 0
 	m.mode = modeSessions
 	m.status = "Select a session with Enter."
 	if len(m.sessions) == 0 {
@@ -753,7 +813,10 @@ func (m *Model) renderSessions() string {
 		return mutedStyle.Render("No saved sessions.")
 	}
 	var b strings.Builder
-	for i, item := range m.sessions {
+	start := m.sessionScroll
+	end := min(len(m.sessions), start+m.sessionListHeight())
+	for i := start; i < end; i++ {
+		item := m.sessions[i]
 		cursor := " "
 		rowStyle := modelRowStyle
 		if i == m.sessionCursor {
@@ -1083,6 +1146,89 @@ func (m *Model) modelListHeight() int {
 		reserved = 13
 	}
 	return max(3, m.height-reserved)
+}
+
+func (m *Model) moveSessionCursor(delta int) {
+	if len(m.sessions) == 0 {
+		m.sessionCursor = 0
+		m.sessionScroll = 0
+		return
+	}
+	m.sessionCursor += delta
+	if m.sessionCursor < 0 {
+		m.sessionCursor = 0
+	}
+	if m.sessionCursor >= len(m.sessions) {
+		m.sessionCursor = len(m.sessions) - 1
+	}
+	m.syncSessionScroll()
+}
+
+func (m *Model) syncSessionScroll() {
+	height := m.sessionListHeight()
+	if m.sessionCursor < m.sessionScroll {
+		m.sessionScroll = m.sessionCursor
+	}
+	if m.sessionCursor >= m.sessionScroll+height {
+		m.sessionScroll = m.sessionCursor - height + 1
+	}
+	if m.sessionScroll < 0 {
+		m.sessionScroll = 0
+	}
+}
+
+func (m *Model) sessionListHeight() int {
+	if m.height <= 0 {
+		return 10
+	}
+	return max(3, m.height-5)
+}
+
+func (m *Model) modelRowsStartY() int {
+	y := bodyContentStartY()
+	if m.modelDetail && len(m.filteredModels()) > 0 {
+		y += lipgloss.Height(m.renderHighlightedModelDetails(m.filteredModels()[m.modelCursor])) + 2
+	}
+	return y + 3
+}
+
+func (m *Model) sessionRowsStartY() int {
+	return bodyContentStartY()
+}
+
+func (m *Model) modelIndexAtY(y int) (int, bool) {
+	index := m.modelScroll + y - m.modelRowsStartY()
+	models := m.filteredModels()
+	if index < m.modelScroll || index >= len(models) || index >= m.modelScroll+m.modelListHeight() {
+		return 0, false
+	}
+	return index, true
+}
+
+func (m *Model) sessionIndexAtY(y int) (int, bool) {
+	index := m.sessionScroll + y - m.sessionRowsStartY()
+	if index < m.sessionScroll || index >= len(m.sessions) || index >= m.sessionScroll+m.sessionListHeight() {
+		return 0, false
+	}
+	return index, true
+}
+
+func bodyContentStartY() int {
+	return 5
+}
+
+func mouseWheelButton(direction int) tea.MouseButton {
+	if direction < 0 {
+		return tea.MouseButtonWheelUp
+	}
+	return tea.MouseButtonWheelDown
+}
+
+func mouseWheelType(direction int) tea.MouseEventType {
+	if direction < 0 {
+		return tea.MouseWheelUp
+	}
+	return tea.MouseWheelDown
 }
 
 func (m *Model) displaySessionID() string {
