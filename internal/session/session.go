@@ -16,6 +16,7 @@ import (
 type Message struct {
 	Role      string `json:"role"`
 	Content   string `json:"content"`
+	Model     string `json:"model,omitempty"`
 	CreatedAt string `json:"created_at"`
 }
 
@@ -118,9 +119,14 @@ func (s Store) Save(session Session) error {
 }
 
 func (s Store) Append(session *Session, role, content string) {
+	s.AppendWithModel(session, role, content, "")
+}
+
+func (s Store) AppendWithModel(session *Session, role, content, model string) {
 	session.Messages = append(session.Messages, Message{
 		Role:      role,
 		Content:   content,
+		Model:     strings.TrimSpace(model),
 		CreatedAt: s.now().UTC().Format(time.RFC3339),
 	})
 }

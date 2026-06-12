@@ -476,7 +476,9 @@ func TestUsageCommandShowsCurrentSessionUsageAndDoesNotBlockInput(t *testing.T) 
 	}
 	model.loadSession(item)
 
-	model.showUsage()
+	if err := model.showUsage(context.Background()); err != nil {
+		t.Fatalf("showUsage returned error: %v", err)
+	}
 	if !model.usageVisible {
 		t.Fatalf("usage visible = false, want usage overlay")
 	}
@@ -491,6 +493,63 @@ func TestUsageCommandShowsCurrentSessionUsageAndDoesNotBlockInput(t *testing.T) 
 	model = updated.(*Model)
 	if model.usageVisible || model.input.Value() != "n" {
 		t.Fatalf("usage visible=%v input=%q, want usage dismissed and input accepted", model.usageVisible, model.input.Value())
+	}
+}
+
+func TestUsageCommandCalculatesCostAcrossModelSwitches(t *testing.T) {
+	client := &fakeClient{models: []api.Model{
+		{ID: "cheap-chat", Endpoint: "/v1/chat/completions", OurPrice: "$1 / 1M input tokens, $2 / 1M output tokens"},
+		{ID: "expensive-chat", Endpoint: "/v1/chat/completions", OurPrice: "$10 / 1M input tokens, $20 / 1M output tokens"},
+	}}
+	model := newTestModel(t, client)
+	model.activeModel = "expensive-chat"
+	model.current = session.Session{
+		ID:    "usage-session",
+		Model: "expensive-chat",
+		Messages: []session.Message{
+			{Role: "user", Content: strings.Repeat("a", 400), Model: "cheap-chat"},
+			{Role: "assistant", Content: strings.Repeat("b", 800), Model: "cheap-chat"},
+			{Role: "user", Content: strings.Repeat("c", 400), Model: "expensive-chat"},
+			{Role: "assistant", Content: strings.Repeat("d", 800), Model: "expensive-chat"},
+		},
+	}
+
+	if err := model.showUsage(context.Background()); err != nil {
+		t.Fatalf("showUsage returned error: %v", err)
+	}
+
+	rendered := model.renderUsage()
+	for _, want := range []string{
+		"Estimated cost: $0.005500",
+		"cheap-chat: input 100, output 200, cost $0.000500",
+		"expensive-chat: input 100, output 200, cost $0.005000",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("usage = %q, want %q", rendered, want)
+		}
+	}
+}
+
+func TestCompletedTurnsStoreTheModelUsedForUsageCosting(t *testing.T) {
+	client := &fakeClient{streamDeltas: []string{"answer"}}
+	model := newTestModel(t, client)
+	model.activeModel = "first-model"
+	if err := model.sendPrompt(context.Background(), "first prompt"); err != nil {
+		t.Fatalf("sendPrompt returned error: %v", err)
+	}
+	model.activeModel = "second-model"
+	if err := model.sendPrompt(context.Background(), "second prompt"); err != nil {
+		t.Fatalf("sendPrompt returned error: %v", err)
+	}
+
+	if len(model.current.Messages) != 4 {
+		t.Fatalf("saved messages = %d, want two turns", len(model.current.Messages))
+	}
+	if got := model.current.Messages[0].Model; got != "first-model" {
+		t.Fatalf("first turn model = %q, want first-model", got)
+	}
+	if got := model.current.Messages[2].Model; got != "second-model" {
+		t.Fatalf("second turn model = %q, want second-model", got)
 	}
 }
 

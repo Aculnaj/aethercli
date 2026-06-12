@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,6 +70,7 @@ type Model struct {
 	sessions      []session.Summary
 	sessionCursor int
 	sessionScroll int
+	usageModels   []api.Model
 	mode          mode
 	status        string
 	helpVisible   bool
@@ -86,11 +89,13 @@ type Model struct {
 
 type streamDeltaMsg struct {
 	delta string
+	model string
 }
 
 type streamDoneMsg struct {
 	prompt string
 	answer string
+	model  string
 	err    error
 }
 
@@ -184,7 +189,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.updateKey(msg)
 	case streamDeltaMsg:
-		m.appendAssistantDelta(msg.delta)
+		m.appendAssistantDelta(msg.delta, msg.model)
 		m.refreshViewport()
 		return m, waitForStream(m.streamCh)
 	case streamDoneMsg:
@@ -195,7 +200,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		}
-		if err := m.saveCompletedTurn(msg.prompt, msg.answer); err != nil {
+		if err := m.saveCompletedTurn(msg.prompt, msg.answer, msg.model); err != nil {
 			m.status = err.Error()
 			return m, nil
 		}
@@ -468,7 +473,9 @@ func (m *Model) handleSlashCommand(input string) tea.Cmd {
 	case "clear":
 		m.clearVisible()
 	case "usage":
-		m.showUsage()
+		if err := m.showUsage(context.Background()); err != nil {
+			m.status = err.Error()
+		}
 	case "help":
 		m.showHelp()
 	case "quit":
@@ -599,11 +606,21 @@ func (m *Model) showHelp() {
 	m.status = "/models /model <id> /sessions /resume <id> /new /clear /usage /help /quit"
 }
 
-func (m *Model) showUsage() {
+func (m *Model) showUsage(ctx context.Context) error {
+	models, err := m.client.Models(ctx)
+	if err != nil {
+		m.usageModels = nil
+		m.mode = modeChat
+		m.helpVisible = false
+		m.usageVisible = true
+		return err
+	}
+	m.usageModels = api.FilterChatModels(models)
 	m.mode = modeChat
 	m.helpVisible = false
 	m.usageVisible = true
 	m.status = "Session usage."
+	return nil
 }
 
 func (m *Model) requestQuit() {
@@ -615,12 +632,13 @@ func (m *Model) sendPrompt(ctx context.Context, prompt string) error {
 	if prompt == "" {
 		return nil
 	}
-	userMessage := session.Message{Role: "user", Content: prompt}
+	activeModel := m.activeModel
+	userMessage := session.Message{Role: "user", Content: prompt, Model: activeModel}
 	m.messages = append(m.messages, userMessage)
 	requestPrompt := conversationPrompt(m.current.Messages, prompt)
 
 	var assistant strings.Builder
-	err := m.client.StreamChat(ctx, api.ChatRequest{Model: m.activeModel, Prompt: requestPrompt}, func(delta string) error {
+	err := m.client.StreamChat(ctx, api.ChatRequest{Model: activeModel, Prompt: requestPrompt}, func(delta string) error {
 		assistant.WriteString(delta)
 		return nil
 	})
@@ -629,8 +647,8 @@ func (m *Model) sendPrompt(ctx context.Context, prompt string) error {
 		return err
 	}
 	answer := assistant.String()
-	m.messages = append(m.messages, session.Message{Role: "assistant", Content: answer})
-	if err := m.saveCompletedTurn(prompt, answer); err != nil {
+	m.messages = append(m.messages, session.Message{Role: "assistant", Content: answer, Model: activeModel})
+	if err := m.saveCompletedTurn(prompt, answer, activeModel); err != nil {
 		m.status = err.Error()
 		return err
 	}
@@ -642,9 +660,9 @@ func (m *Model) sendPrompt(ctx context.Context, prompt string) error {
 func (m *Model) beginStream(prompt string) tea.Cmd {
 	m.streaming = true
 	m.status = "Streaming..."
-	m.messages = append(m.messages, session.Message{Role: "user", Content: prompt})
-	requestPrompt := conversationPrompt(m.current.Messages, prompt)
 	activeModel := m.activeModel
+	m.messages = append(m.messages, session.Message{Role: "user", Content: prompt, Model: activeModel})
+	requestPrompt := conversationPrompt(m.current.Messages, prompt)
 	client := m.client
 	ch := m.streamCh
 
@@ -653,10 +671,10 @@ func (m *Model) beginStream(prompt string) tea.Cmd {
 			var assistant strings.Builder
 			err := client.StreamChat(context.Background(), api.ChatRequest{Model: activeModel, Prompt: requestPrompt}, func(delta string) error {
 				assistant.WriteString(delta)
-				ch <- streamDeltaMsg{delta: delta}
+				ch <- streamDeltaMsg{delta: delta, model: activeModel}
 				return nil
 			})
-			ch <- streamDoneMsg{prompt: prompt, answer: assistant.String(), err: err}
+			ch <- streamDoneMsg{prompt: prompt, answer: assistant.String(), model: activeModel, err: err}
 		}()
 		return waitForStream(ch)()
 	}
@@ -668,16 +686,19 @@ func waitForStream(ch <-chan tea.Msg) tea.Cmd {
 	}
 }
 
-func (m *Model) appendAssistantDelta(delta string) {
+func (m *Model) appendAssistantDelta(delta, model string) {
 	if delta == "" {
 		return
 	}
 	last := len(m.messages) - 1
 	if last < 0 || m.messages[last].Role != "assistant" {
-		m.messages = append(m.messages, session.Message{Role: "assistant", Content: delta})
+		m.messages = append(m.messages, session.Message{Role: "assistant", Content: delta, Model: model})
 		return
 	}
 	m.messages[last].Content += delta
+	if strings.TrimSpace(m.messages[last].Model) == "" {
+		m.messages[last].Model = model
+	}
 }
 
 func (m *Model) removeStreamingAssistant() {
@@ -690,18 +711,18 @@ func (m *Model) removeStreamingAssistant() {
 	}
 }
 
-func (m *Model) saveCompletedTurn(prompt, answer string) error {
+func (m *Model) saveCompletedTurn(prompt, answer, model string) error {
 	if strings.TrimSpace(m.current.ID) == "" {
-		item, err := m.store.New(m.activeModel, prompt)
+		item, err := m.store.New(model, prompt)
 		if err != nil {
 			return err
 		}
 		m.current = item
 		m.sessionID = item.ID
 	}
-	m.current.Model = m.activeModel
-	m.store.Append(&m.current, "user", prompt)
-	m.store.Append(&m.current, "assistant", answer)
+	m.current.Model = model
+	m.store.AppendWithModel(&m.current, "user", prompt, model)
+	m.store.AppendWithModel(&m.current, "assistant", answer, model)
 	if m.current.Title == "" {
 		m.current.Title = prompt
 	}
@@ -848,7 +869,7 @@ func (m *Model) renderHelp() string {
 
 func (m *Model) renderUsage() string {
 	usage := m.sessionUsage()
-	return strings.Join([]string{
+	lines := []string{
 		"Session usage",
 		"Session: " + usage.sessionID,
 		"Model: " + usage.model,
@@ -858,9 +879,24 @@ func (m *Model) renderUsage() string {
 		fmt.Sprintf("Estimated user tokens: %d", usage.userTokens),
 		fmt.Sprintf("Estimated assistant tokens: %d", usage.assistantTokens),
 		fmt.Sprintf("Estimated tokens: %d", usage.totalTokens),
-		"",
-		"Estimates use the local 4 characters per token heuristic.",
-	}, "\n")
+	}
+	if usage.costAvailable {
+		lines = append(lines, fmt.Sprintf("Estimated cost: $%.6f", usage.estimatedCost))
+	} else {
+		lines = append(lines, "Estimated cost: unavailable; model price metadata is missing")
+	}
+	if len(usage.modelUsages) > 0 {
+		lines = append(lines, "", "Cost by model:")
+		for _, item := range usage.modelUsages {
+			if item.costAvailable {
+				lines = append(lines, fmt.Sprintf("%s: input %d, output %d, cost $%.6f", item.model, item.inputTokens, item.outputTokens, item.cost))
+			} else {
+				lines = append(lines, fmt.Sprintf("%s: input %d, output %d, cost unavailable", item.model, item.inputTokens, item.outputTokens))
+			}
+		}
+	}
+	lines = append(lines, "", "Estimates use the local 4 characters per token heuristic.")
+	return strings.Join(lines, "\n")
 }
 
 type sessionUsage struct {
@@ -872,6 +908,17 @@ type sessionUsage struct {
 	userTokens        int
 	assistantTokens   int
 	totalTokens       int
+	estimatedCost     float64
+	costAvailable     bool
+	modelUsages       []modelUsage
+}
+
+type modelUsage struct {
+	model         string
+	inputTokens   int
+	outputTokens  int
+	cost          float64
+	costAvailable bool
 }
 
 func (m *Model) sessionUsage() sessionUsage {
@@ -879,6 +926,9 @@ func (m *Model) sessionUsage() sessionUsage {
 	if len(messages) == 0 {
 		messages = m.messages
 	}
+	priceByModel := m.priceByModel()
+	usageByModel := map[string]*modelUsage{}
+	var modelOrder []string
 	usage := sessionUsage{
 		sessionID: m.displaySessionID(),
 		model:     m.activeModel,
@@ -886,17 +936,64 @@ func (m *Model) sessionUsage() sessionUsage {
 	}
 	for _, message := range messages {
 		tokens := estimateUsageTokens(message.Content)
+		modelID := m.usageModelForMessage(message)
+		if _, ok := usageByModel[modelID]; !ok {
+			usageByModel[modelID] = &modelUsage{model: modelID}
+			modelOrder = append(modelOrder, modelID)
+		}
+		modelItem := usageByModel[modelID]
 		switch message.Role {
 		case "user":
 			usage.userMessages++
 			usage.userTokens += tokens
+			modelItem.inputTokens += tokens
 		case "assistant":
 			usage.assistantMessages++
 			usage.assistantTokens += tokens
+			modelItem.outputTokens += tokens
 		}
 		usage.totalTokens += tokens
 	}
+	usage.costAvailable = len(modelOrder) > 0
+	for _, modelID := range modelOrder {
+		item := usageByModel[modelID]
+		inputPerMillion, outputPerMillion, ok := priceByModel[modelID].input, priceByModel[modelID].output, priceByModel[modelID].ok
+		if !ok {
+			usage.costAvailable = false
+			usage.modelUsages = append(usage.modelUsages, *item)
+			continue
+		}
+		item.cost = float64(item.inputTokens)/1_000_000*inputPerMillion + float64(item.outputTokens)/1_000_000*outputPerMillion
+		item.costAvailable = true
+		usage.estimatedCost += item.cost
+		usage.modelUsages = append(usage.modelUsages, *item)
+	}
 	return usage
+}
+
+func (m *Model) usageModelForMessage(message session.Message) string {
+	if model := strings.TrimSpace(message.Model); model != "" {
+		return model
+	}
+	if model := strings.TrimSpace(m.current.Model); model != "" {
+		return model
+	}
+	return m.activeModel
+}
+
+type modelPrice struct {
+	input  float64
+	output float64
+	ok     bool
+}
+
+func (m *Model) priceByModel() map[string]modelPrice {
+	prices := make(map[string]modelPrice, len(m.usageModels))
+	for _, model := range m.usageModels {
+		input, output, ok := parseUsagePricePerMillion(model.OurPrice)
+		prices[model.ID] = modelPrice{input: input, output: output, ok: ok}
+	}
+	return prices
 }
 
 func estimateUsageTokens(text string) int {
@@ -905,6 +1002,26 @@ func estimateUsageTokens(text string) int {
 		return 0
 	}
 	return (len(text) + 3) / 4
+}
+
+var (
+	usagePricePairPattern   = regexp.MustCompile(`(?i)\$?\s*([0-9]+(?:\.[0-9]+)?)\s*/\s*1m\s+input.*?\$?\s*([0-9]+(?:\.[0-9]+)?)\s*/\s*1m\s+output`)
+	usagePriceNumberPattern = regexp.MustCompile(`\$?\s*([0-9]+(?:\.[0-9]+)?)`)
+)
+
+func parseUsagePricePerMillion(raw string) (float64, float64, bool) {
+	if matches := usagePricePairPattern.FindStringSubmatch(raw); len(matches) == 3 {
+		input, inputErr := strconv.ParseFloat(matches[1], 64)
+		output, outputErr := strconv.ParseFloat(matches[2], 64)
+		return input, output, inputErr == nil && outputErr == nil
+	}
+	matches := usagePriceNumberPattern.FindAllStringSubmatch(raw, -1)
+	if len(matches) < 2 {
+		return 0, 0, false
+	}
+	input, inputErr := strconv.ParseFloat(matches[0][1], 64)
+	output, outputErr := strconv.ParseFloat(matches[1][1], 64)
+	return input, output, inputErr == nil && outputErr == nil
 }
 
 func (m *Model) renderSlashSuggestions() string {
