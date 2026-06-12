@@ -62,10 +62,15 @@ type Model struct {
 	messages      []session.Message
 	models        []api.Model
 	modelCursor   int
+	modelScroll   int
+	modelQuery    string
+	modelDetail   bool
 	sessions      []session.Summary
 	sessionCursor int
 	mode          mode
 	status        string
+	helpVisible   bool
+	slashCursor   int
 	input         textinput.Model
 	viewport      viewport.Model
 	width         int
@@ -212,6 +217,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.input.SetValue("")
+		m.helpVisible = false
 		return m, nil
 	}
 
@@ -228,6 +234,20 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.slashSuggestionsActive() {
+		switch msg.String() {
+		case "up":
+			m.moveSlashCursor(-1)
+			return m, nil
+		case "down":
+			m.moveSlashCursor(1)
+			return m, nil
+		case "tab":
+			m.completeSlashSuggestion()
+			return m, nil
+		}
+	}
+
 	switch msg.String() {
 	case "enter":
 		value := strings.TrimSpace(m.input.Value())
@@ -240,28 +260,46 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.beginStream(value)
 	case "ctrl+n":
+		m.helpVisible = false
 		m.input.SetValue(m.input.Value() + "\n")
 		m.input.CursorEnd()
 		return m, nil
 	}
 
 	var cmd tea.Cmd
+	if m.helpVisible {
+		m.helpVisible = false
+	}
 	m.input, cmd = m.input.Update(msg)
+	m.clampSlashCursor()
 	return m, cmd
 }
 
 func (m *Model) updateModelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
-		if m.modelCursor > 0 {
-			m.modelCursor--
-		}
+		m.moveModelCursor(-1)
 	case "down", "j":
-		if m.modelCursor < len(m.models)-1 {
-			m.modelCursor++
-		}
+		m.moveModelCursor(1)
+	case "pgup":
+		m.moveModelCursor(-m.modelListHeight())
+	case "pgdown":
+		m.moveModelCursor(m.modelListHeight())
 	case "enter":
 		m.selectCurrentModel()
+	case "backspace", "ctrl+h":
+		if m.modelQuery != "" {
+			m.modelQuery = trimLastRune(m.modelQuery)
+			m.resetModelCursor()
+		}
+	case "ctrl+u":
+		m.modelQuery = ""
+		m.resetModelCursor()
+	default:
+		if msg.Type == tea.KeyRunes {
+			m.modelQuery += string(msg.Runes)
+			m.resetModelCursor()
+		}
 	}
 	return m, nil
 }
@@ -296,8 +334,11 @@ func (m *Model) View() string {
 		body = m.renderModels()
 	} else if m.mode == modeSessions {
 		body = m.renderSessions()
-	} else if m.mode == modeHelp {
+	} else if m.helpVisible {
 		body = m.renderHelp()
+	}
+	if suggestions := m.renderSlashSuggestions(); suggestions != "" {
+		body = lipgloss.JoinVertical(lipgloss.Left, body, suggestions)
 	}
 	status := statusStyle.Width(m.width).Render(m.status)
 	input := m.input.View()
@@ -316,8 +357,10 @@ func (m *Model) handleSlashCommand(input string) tea.Cmd {
 		}
 	case "model":
 		if strings.TrimSpace(cmd.arg) == "" {
-			m.status = "Usage: /model <id>"
-			return nil
+			if err := m.showCurrentModelDetails(context.Background()); err != nil {
+				m.status = err.Error()
+			}
+			break
 		}
 		m.activeModel = strings.TrimSpace(cmd.arg)
 		m.status = "Model set to " + m.activeModel
@@ -366,22 +409,45 @@ func (m *Model) showModels(ctx context.Context) error {
 		return err
 	}
 	m.models = api.FilterChatModels(models)
+	m.modelQuery = ""
 	m.modelCursor = 0
+	m.modelScroll = 0
+	m.modelDetail = false
 	m.mode = modeModels
-	m.status = "Select a chat model with Enter."
+	m.helpVisible = false
+	m.status = "Search by typing. Select a chat model with Enter."
 	if len(m.models) == 0 {
 		m.status = "No chat models found."
 	}
 	return nil
 }
 
+func (m *Model) showCurrentModelDetails(ctx context.Context) error {
+	if err := m.showModels(ctx); err != nil {
+		return err
+	}
+	m.modelDetail = true
+	models := m.filteredModels()
+	for i, model := range models {
+		if model.ID == m.activeModel {
+			m.modelCursor = i
+			break
+		}
+	}
+	m.syncModelScroll()
+	m.status = "Current model details. Search or select another model with Enter."
+	return nil
+}
+
 func (m *Model) selectCurrentModel() {
-	if len(m.models) == 0 {
+	models := m.filteredModels()
+	if len(models) == 0 {
 		m.mode = modeChat
 		return
 	}
-	m.activeModel = m.models[m.modelCursor].ID
+	m.activeModel = models[m.modelCursor].ID
 	m.mode = modeChat
+	m.modelDetail = false
 	m.status = "Model set to " + m.activeModel
 }
 
@@ -439,7 +505,8 @@ func (m *Model) clearVisible() {
 }
 
 func (m *Model) showHelp() {
-	m.mode = modeHelp
+	m.mode = modeChat
+	m.helpVisible = true
 	m.status = "/models /model <id> /sessions /resume <id> /new /clear /help /quit"
 }
 
@@ -605,11 +672,25 @@ func (m *Model) renderMessages() string {
 }
 
 func (m *Model) renderModels() string {
-	if len(m.models) == 0 {
+	models := m.filteredModels()
+	if len(models) == 0 && len(m.models) == 0 {
 		return mutedStyle.Render("No chat models found.")
 	}
 	var b strings.Builder
-	for i, model := range m.models {
+	if m.modelDetail && len(models) > 0 {
+		b.WriteString(m.renderHighlightedModelDetails(models[m.modelCursor]))
+		b.WriteString("\n\n")
+	}
+	fmt.Fprintf(&b, "Search: %s\n", m.modelQuery)
+	fmt.Fprintf(&b, "Showing %d of %d chat models. Type to filter, Enter to switch, Esc to close.\n\n", len(models), len(m.models))
+	if len(models) == 0 {
+		b.WriteString(mutedStyle.Render("No matching chat models."))
+		return b.String()
+	}
+	start := m.modelScroll
+	end := min(len(models), start+m.modelListHeight())
+	for i := start; i < end; i++ {
+		model := models[i]
 		cursor := " "
 		if i == m.modelCursor {
 			cursor = ">"
@@ -617,6 +698,16 @@ func (m *Model) renderModels() string {
 		fmt.Fprintf(&b, "%s %s  %s  %s\n", cursor, model.ID, model.OwnedBy, model.Context)
 	}
 	return b.String()
+}
+
+func (m *Model) renderHighlightedModelDetails(model api.Model) string {
+	return strings.Join([]string{
+		"Current model: " + m.activeModel,
+		"Highlighted: " + model.ID,
+		"Provider: " + emptyFallback(model.OwnedBy, "-"),
+		"Context: " + emptyFallback(model.Context, "-"),
+		"Price: " + emptyFallback(model.OurPrice, "-"),
+	}, "\n")
 }
 
 func (m *Model) renderSessions() string {
@@ -649,6 +740,194 @@ func (m *Model) renderHelp() string {
 	}, "\n")
 }
 
+func (m *Model) renderSlashSuggestions() string {
+	if m.mode != modeChat || m.streaming {
+		return ""
+	}
+	value := strings.TrimSpace(m.input.Value())
+	if !strings.HasPrefix(value, "/") {
+		return ""
+	}
+	query := strings.TrimPrefix(value, "/")
+	suggestions := filteredSlashSuggestions(query)
+	if len(suggestions) == 0 {
+		return mutedStyle.Render("No matching commands.")
+	}
+	var b strings.Builder
+	b.WriteString("Commands\n")
+	cursor := m.normalizedSlashCursor(suggestions)
+	for i, suggestion := range suggestions {
+		prefix := " "
+		if i == cursor {
+			prefix = ">"
+		}
+		fmt.Fprintf(&b, "%s %-14s %s\n", prefix, suggestion.usage, suggestion.description)
+	}
+	return suggestionStyle.Render(strings.TrimRight(b.String(), "\n"))
+}
+
+type slashSuggestion struct {
+	usage       string
+	name        string
+	description string
+}
+
+var slashSuggestions = []slashSuggestion{
+	{usage: "/models", name: "models", description: "search and switch chat models"},
+	{usage: "/model <id>", name: "model", description: "show current model details or switch directly"},
+	{usage: "/sessions", name: "sessions", description: "browse saved sessions"},
+	{usage: "/resume <id>", name: "resume", description: "load a saved session"},
+	{usage: "/new", name: "new", description: "start a new session"},
+	{usage: "/clear", name: "clear", description: "clear visible messages"},
+	{usage: "/help", name: "help", description: "show command help"},
+	{usage: "/quit", name: "quit", description: "exit the TUI"},
+}
+
+func filteredSlashSuggestions(query string) []slashSuggestion {
+	query = strings.ToLower(strings.TrimSpace(query))
+	matches := make([]slashSuggestion, 0, len(slashSuggestions))
+	for _, suggestion := range slashSuggestions {
+		if query == "" || strings.Contains(suggestion.name, query) || strings.Contains(suggestion.usage, query) {
+			matches = append(matches, suggestion)
+		}
+	}
+	return matches
+}
+
+func (m *Model) slashSuggestionsActive() bool {
+	return m.mode == modeChat && strings.HasPrefix(strings.TrimSpace(m.input.Value()), "/")
+}
+
+func (m *Model) currentSlashSuggestions() []slashSuggestion {
+	value := strings.TrimSpace(m.input.Value())
+	if !strings.HasPrefix(value, "/") {
+		return nil
+	}
+	return filteredSlashSuggestions(strings.TrimPrefix(value, "/"))
+}
+
+func (m *Model) moveSlashCursor(delta int) {
+	suggestions := m.currentSlashSuggestions()
+	if len(suggestions) == 0 {
+		m.slashCursor = 0
+		return
+	}
+	m.slashCursor += delta
+	if m.slashCursor < 0 {
+		m.slashCursor = 0
+	}
+	if m.slashCursor >= len(suggestions) {
+		m.slashCursor = len(suggestions) - 1
+	}
+}
+
+func (m *Model) clampSlashCursor() {
+	suggestions := m.currentSlashSuggestions()
+	if len(suggestions) == 0 {
+		m.slashCursor = 0
+		return
+	}
+	if m.slashCursor >= len(suggestions) {
+		m.slashCursor = len(suggestions) - 1
+	}
+	if m.slashCursor < 0 {
+		m.slashCursor = 0
+	}
+}
+
+func (m *Model) normalizedSlashCursor(suggestions []slashSuggestion) int {
+	if len(suggestions) == 0 {
+		return 0
+	}
+	if m.slashCursor < 0 {
+		return 0
+	}
+	if m.slashCursor >= len(suggestions) {
+		return len(suggestions) - 1
+	}
+	return m.slashCursor
+}
+
+func (m *Model) completeSlashSuggestion() {
+	suggestions := m.currentSlashSuggestions()
+	if len(suggestions) == 0 {
+		return
+	}
+	suggestion := suggestions[m.normalizedSlashCursor(suggestions)]
+	m.input.SetValue(suggestion.completion())
+	m.input.CursorEnd()
+}
+
+func (s slashSuggestion) completion() string {
+	command := s.usage
+	if before, _, ok := strings.Cut(command, " "); ok {
+		return before + " "
+	}
+	return command
+}
+
+func (m *Model) filteredModels() []api.Model {
+	query := strings.ToLower(strings.TrimSpace(m.modelQuery))
+	if query == "" {
+		return m.models
+	}
+	filtered := make([]api.Model, 0, len(m.models))
+	for _, model := range m.models {
+		haystack := strings.ToLower(strings.Join([]string{model.ID, model.OwnedBy, model.Context, model.OurPrice}, " "))
+		if strings.Contains(haystack, query) {
+			filtered = append(filtered, model)
+		}
+	}
+	return filtered
+}
+
+func (m *Model) moveModelCursor(delta int) {
+	models := m.filteredModels()
+	if len(models) == 0 {
+		m.modelCursor = 0
+		m.modelScroll = 0
+		return
+	}
+	m.modelCursor += delta
+	if m.modelCursor < 0 {
+		m.modelCursor = 0
+	}
+	if m.modelCursor >= len(models) {
+		m.modelCursor = len(models) - 1
+	}
+	m.syncModelScroll()
+}
+
+func (m *Model) resetModelCursor() {
+	m.modelCursor = 0
+	m.modelScroll = 0
+	m.syncModelScroll()
+}
+
+func (m *Model) syncModelScroll() {
+	height := m.modelListHeight()
+	if m.modelCursor < m.modelScroll {
+		m.modelScroll = m.modelCursor
+	}
+	if m.modelCursor >= m.modelScroll+height {
+		m.modelScroll = m.modelCursor - height + 1
+	}
+	if m.modelScroll < 0 {
+		m.modelScroll = 0
+	}
+}
+
+func (m *Model) modelListHeight() int {
+	if m.height <= 0 {
+		return 10
+	}
+	reserved := 6
+	if m.modelDetail {
+		reserved = 13
+	}
+	return max(3, m.height-reserved)
+}
+
 func (m *Model) displaySessionID() string {
 	if strings.TrimSpace(m.sessionID) == "" {
 		return "new"
@@ -670,10 +949,34 @@ func max(a, b int) int {
 	return b
 }
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func emptyFallback(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func trimLastRune(value string) string {
+	runes := []rune(value)
+	if len(runes) == 0 {
+		return ""
+	}
+	return string(runes[:len(runes)-1])
+}
+
 var (
-	headerStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("62")).Padding(0, 1)
-	statusStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	mutedStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	userStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	assistantStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
+	headerStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("62")).Padding(0, 1)
+	statusStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	mutedStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	userStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	assistantStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
+	suggestionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
 )
