@@ -256,6 +256,9 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.input.SetValue("")
 		if strings.HasPrefix(value, "/") {
+			if resolved, ok := m.resolveSingleSlashSuggestion(value); ok {
+				value = resolved
+			}
 			return m, m.handleSlashCommand(value)
 		}
 		return m, m.beginStream(value)
@@ -856,6 +859,22 @@ func (m *Model) completeSlashSuggestion() {
 	suggestion := suggestions[m.normalizedSlashCursor(suggestions)]
 	m.input.SetValue(suggestion.completion())
 	m.input.CursorEnd()
+}
+
+func (m *Model) resolveSingleSlashSuggestion(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "/") {
+		return value, false
+	}
+	suggestions := filteredSlashSuggestions(strings.TrimPrefix(value, "/"))
+	if len(suggestions) != 1 {
+		return value, false
+	}
+	usage := suggestions[0].usage
+	if before, _, ok := strings.Cut(usage, " "); ok {
+		return before, true
+	}
+	return usage, true
 }
 
 func (s slashSuggestion) completion() string {

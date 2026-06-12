@@ -316,6 +316,23 @@ func TestSlashInputShowsFilteredCommandSuggestions(t *testing.T) {
 	}
 }
 
+func TestEnterConfirmsSingleSlashCommandSuggestion(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	model.input.SetValue("/he")
+
+	updated, cmd := model.updateKey(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(*Model)
+	if cmd != nil {
+		t.Fatalf("cmd = %#v, want no async command for help suggestion", cmd)
+	}
+	if !model.helpVisible {
+		t.Fatalf("help visible = false, want Enter to execute the only matching slash command")
+	}
+	if model.input.Value() != "" {
+		t.Fatalf("input = %q, want confirmed command to clear input", model.input.Value())
+	}
+}
+
 func newTestModel(t *testing.T, client *fakeClient) *Model {
 	t.Helper()
 	configPath := filepath.Join(t.TempDir(), "config.json")
