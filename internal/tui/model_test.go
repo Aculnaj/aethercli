@@ -411,10 +411,31 @@ func TestSlashInputShowsFilteredCommandSuggestions(t *testing.T) {
 	model.input.SetValue("/mo")
 	updated, _ := model.updateKey(tea.KeyMsg{Type: tea.KeyDown})
 	model = updated.(*Model)
-	updated, _ = model.updateKey(tea.KeyMsg{Type: tea.KeyTab})
-	model = updated.(*Model)
 	if model.input.Value() != "/model " {
-		t.Fatalf("input = %q, want selected slash suggestion completed", model.input.Value())
+		t.Fatalf("input = %q, want selected slash suggestion completed automatically", model.input.Value())
+	}
+}
+
+func TestSlashSelectionAutocompletesInputAndKeepsCyclingMatches(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	model.input.SetValue("/")
+
+	updated, _ := model.updateKey(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(*Model)
+	if got := model.input.Value(); got != "/model " {
+		t.Fatalf("input = %q, want selected slash command completed", got)
+	}
+
+	updated, _ = model.updateKey(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(*Model)
+	if got := model.input.Value(); got != "/sessions" {
+		t.Fatalf("input = %q, want next original slash match completed", got)
+	}
+
+	updated, _ = model.updateKey(tea.KeyMsg{Type: tea.KeyUp})
+	model = updated.(*Model)
+	if got := model.input.Value(); got != "/model " {
+		t.Fatalf("input = %q, want previous original slash match completed", got)
 	}
 }
 

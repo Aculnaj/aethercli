@@ -72,6 +72,8 @@ type Model struct {
 	helpVisible   bool
 	usageVisible  bool
 	slashCursor   int
+	slashQuery    string
+	slashPreview  bool
 	input         textinput.Model
 	viewport      viewport.Model
 	width         int
@@ -218,6 +220,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.input.SetValue("")
+		m.resetSlashSuggestionState()
 		m.helpVisible = false
 		m.usageVisible = false
 		return m, nil
@@ -240,9 +243,11 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "up":
 			m.moveSlashCursor(-1)
+			m.previewSlashSuggestion()
 			return m, nil
 		case "down":
 			m.moveSlashCursor(1)
+			m.previewSlashSuggestion()
 			return m, nil
 		case "tab":
 			m.completeSlashSuggestion()
@@ -257,6 +262,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.input.SetValue("")
+		m.resetSlashSuggestionState()
 		if strings.HasPrefix(value, "/") {
 			if resolved, ok := m.resolveSingleSlashSuggestion(value); ok {
 				value = resolved
@@ -277,7 +283,11 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.helpVisible = false
 		m.usageVisible = false
 	}
+	if m.slashPreview {
+		m.slashPreview = false
+	}
 	m.input, cmd = m.input.Update(msg)
+	m.syncSlashQueryFromInput()
 	m.clampSlashCursor()
 	return m, cmd
 }
@@ -838,11 +848,10 @@ func (m *Model) renderSlashSuggestions() string {
 	if m.mode != modeChat || m.streaming {
 		return ""
 	}
-	value := strings.TrimSpace(m.input.Value())
-	if !strings.HasPrefix(value, "/") {
+	query, ok := m.slashSuggestionQuery()
+	if !ok {
 		return ""
 	}
-	query := strings.TrimPrefix(value, "/")
 	suggestions := filteredSlashSuggestions(query)
 	if len(suggestions) == 0 {
 		return mutedStyle.Render("No matching commands.")
@@ -894,11 +903,22 @@ func (m *Model) slashSuggestionsActive() bool {
 }
 
 func (m *Model) currentSlashSuggestions() []slashSuggestion {
-	value := strings.TrimSpace(m.input.Value())
-	if !strings.HasPrefix(value, "/") {
+	query, ok := m.slashSuggestionQuery()
+	if !ok {
 		return nil
 	}
-	return filteredSlashSuggestions(strings.TrimPrefix(value, "/"))
+	return filteredSlashSuggestions(query)
+}
+
+func (m *Model) slashSuggestionQuery() (string, bool) {
+	value := strings.TrimSpace(m.input.Value())
+	if !strings.HasPrefix(value, "/") {
+		return "", false
+	}
+	if m.slashPreview {
+		return m.slashQuery, true
+	}
+	return strings.TrimPrefix(value, "/"), true
 }
 
 func (m *Model) moveSlashCursor(delta int) {
@@ -941,13 +961,25 @@ func (m *Model) normalizedSlashCursor(suggestions []slashSuggestion) int {
 }
 
 func (m *Model) completeSlashSuggestion() {
-	suggestions := m.currentSlashSuggestions()
+	m.previewSlashSuggestion()
+}
+
+func (m *Model) previewSlashSuggestion() {
+	query, ok := m.slashSuggestionQuery()
+	if !ok {
+		return
+	}
+	suggestions := filteredSlashSuggestions(query)
 	if len(suggestions) == 0 {
 		return
+	}
+	if !m.slashPreview {
+		m.slashQuery = query
 	}
 	suggestion := suggestions[m.normalizedSlashCursor(suggestions)]
 	m.input.SetValue(suggestion.completion())
 	m.input.CursorEnd()
+	m.slashPreview = true
 }
 
 func (m *Model) resolveSingleSlashSuggestion(value string) (string, bool) {
@@ -972,6 +1004,23 @@ func (s slashSuggestion) completion() string {
 		return before + " "
 	}
 	return command
+}
+
+func (m *Model) syncSlashQueryFromInput() {
+	value := strings.TrimSpace(m.input.Value())
+	if !strings.HasPrefix(value, "/") {
+		m.resetSlashSuggestionState()
+		return
+	}
+	if !m.slashPreview {
+		m.slashQuery = strings.TrimPrefix(value, "/")
+	}
+}
+
+func (m *Model) resetSlashSuggestionState() {
+	m.slashCursor = 0
+	m.slashQuery = ""
+	m.slashPreview = false
 }
 
 func (m *Model) filteredModels() []api.Model {
