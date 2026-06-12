@@ -355,13 +355,13 @@ func (m *Model) View() string {
 	if suggestions := m.renderSlashSuggestions(); suggestions != "" {
 		body = lipgloss.JoinVertical(lipgloss.Left, body, suggestions)
 	}
-	status := statusPanelStyle.Width(m.panelWidth()).Render(inlinePanelContent("Status", m.status))
 	input := m.input.View()
 	if m.streaming {
 		input = ""
 	}
 	input = inputPanelStyle.Width(m.panelWidth()).Render(inlinePanelContent("Input", input))
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, status, input)
+	status := statusLineStyle.Width(m.panelWidth()).Render(statusLineContent(m.status))
+	return lipgloss.JoinVertical(lipgloss.Left, header, body, input, status)
 }
 
 func (m *Model) handleSlashCommand(input string) tea.Cmd {
@@ -1067,6 +1067,14 @@ func inlinePanelContent(title, content string) string {
 	return panelTitleStyle.Render(title) + " " + content
 }
 
+func statusLineContent(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return " "
+	}
+	return "  " + content
+}
+
 func configWithDefaults(cfg config.Config) config.Config {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = config.DefaultBaseURL
@@ -1128,19 +1136,16 @@ var (
 				BorderForeground(lipgloss.Color("240")).
 				Padding(0, 1)
 
-	statusPanelStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("250")).
-				Background(lipgloss.Color("235")).
-				Border(lipgloss.NormalBorder()).
-				BorderForeground(lipgloss.Color("58")).
-				Padding(0, 1)
-
 	inputPanelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("252")).
 			Background(lipgloss.Color("235")).
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(lipgloss.Color("31")).
 			Padding(0, 1)
+
+	statusLineStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("244")).
+			Background(lipgloss.Color("233"))
 
 	emptyPanelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("244")).

@@ -250,9 +250,37 @@ func TestViewRendersFramedPanelsForNavigation(t *testing.T) {
 	model.input.SetValue("/")
 
 	view := model.View()
-	for _, want := range []string{"Aether Chat", "Chat", "Commands", "Status", "Input"} {
+	for _, want := range []string{"Aether Chat", "Chat", "Commands", "Input"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view = %q, want framed section %q", view, want)
+		}
+	}
+}
+
+func TestViewRendersLowKeyStatusBelowInput(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	model.width = 90
+	model.status = "Ready."
+	model.input.SetValue("hello")
+
+	view := model.View()
+	if strings.Contains(view, "Status") {
+		t.Fatalf("view = %q, want status without heading", view)
+	}
+	inputIndex := strings.LastIndex(view, "> hello")
+	if inputIndex == -1 {
+		t.Fatalf("view = %q, want rendered input", view)
+	}
+	statusIndex := strings.LastIndex(view, "Ready.")
+	if statusIndex == -1 {
+		t.Fatalf("view = %q, want rendered status", view)
+	}
+	if statusIndex <= inputIndex {
+		t.Fatalf("view = %q, want status below input", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "Ready.") && strings.ContainsAny(line, "│┌┐└┘─") {
+			t.Fatalf("status line = %q, want no frame", line)
 		}
 	}
 }
