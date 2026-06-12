@@ -51,6 +51,7 @@ type fakeAPIClient struct {
 	chatCalls    int
 	streamDeltas []string
 	models       []api.Model
+	modelCalls   int
 	beforeChat   func()
 	beforeStream func()
 	afterDelta   func()
@@ -129,6 +130,7 @@ func (f *fakeAPIClient) StreamChat(ctx context.Context, req api.ChatRequest, onD
 }
 
 func (f *fakeAPIClient) Models(ctx context.Context) ([]api.Model, error) {
+	f.modelCalls++
 	return f.models, nil
 }
 
@@ -457,6 +459,113 @@ func TestChatCreatesSessionAndSessionsListShowsIt(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, "20260612-103000") || !strings.Contains(got, "first question") {
 		t.Fatalf("stdout = %q, want created session", got)
+	}
+}
+
+func TestChatWithoutPromptStartsTUIRunner(t *testing.T) {
+	configPath := writeConfig(t, `{"base_url":"https://api.aetherapi.dev/v1","default_model":"gpt-4o"}`)
+	var got TUIOptions
+	calls := 0
+
+	cmd := NewRootCommand(Deps{
+		ConfigPath: configPath,
+		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
+		In:         strings.NewReader(""),
+		Out:        &bytes.Buffer{},
+		Err:        &bytes.Buffer{},
+		ClientFactory: func(baseURL, apiKey string) APIClient {
+			return &fakeAPIClient{}
+		},
+		TUIRunner: func(ctx context.Context, opts TUIOptions) error {
+			calls++
+			got = opts
+			return nil
+		},
+	})
+	cmd.SetArgs([]string{"chat"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("TUI runner calls = %d, want 1", calls)
+	}
+	if got.Model != "gpt-4o" {
+		t.Fatalf("model = %q, want default model", got.Model)
+	}
+	if got.Resume {
+		t.Fatalf("resume = true, want false")
+	}
+}
+
+func TestChatWithPromptKeepsOneShotSessionFlow(t *testing.T) {
+	configPath := writeConfig(t, `{"base_url":"https://api.aetherapi.dev/v1","default_model":"gpt-4o"}`)
+	fakeClient := &fakeAPIClient{chatContent: "answer"}
+	tuiCalls := 0
+
+	cmd := NewRootCommand(Deps{
+		ConfigPath: configPath,
+		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
+		In:         strings.NewReader(""),
+		Out:        &bytes.Buffer{},
+		Err:        &bytes.Buffer{},
+		ClientFactory: func(baseURL, apiKey string) APIClient {
+			return fakeClient
+		},
+		TUIRunner: func(ctx context.Context, opts TUIOptions) error {
+			tuiCalls++
+			return nil
+		},
+	})
+	cmd.SetArgs([]string{"chat", "hello"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if tuiCalls != 0 {
+		t.Fatalf("TUI runner calls = %d, want 0", tuiCalls)
+	}
+	if fakeClient.chatCalls != 1 {
+		t.Fatalf("chat calls = %d, want 1", fakeClient.chatCalls)
+	}
+	if fakeClient.chatRequest.Prompt != "hello" {
+		t.Fatalf("prompt = %q, want one-shot prompt", fakeClient.chatRequest.Prompt)
+	}
+}
+
+func TestTUICommandPassesSessionToRunner(t *testing.T) {
+	configPath := writeConfig(t, `{"base_url":"https://api.aetherapi.dev/v1","default_model":"gpt-4o"}`)
+	var got TUIOptions
+	calls := 0
+
+	cmd := NewRootCommand(Deps{
+		ConfigPath: configPath,
+		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
+		In:         strings.NewReader(""),
+		Out:        &bytes.Buffer{},
+		Err:        &bytes.Buffer{},
+		ClientFactory: func(baseURL, apiKey string) APIClient {
+			return &fakeAPIClient{}
+		},
+		TUIRunner: func(ctx context.Context, opts TUIOptions) error {
+			calls++
+			got = opts
+			return nil
+		},
+	})
+	cmd.SetArgs([]string{"tui", "--session", "20260612-103000", "--model", "claude-sonnet-4-6"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("TUI runner calls = %d, want 1", calls)
+	}
+	if got.SessionID != "20260612-103000" {
+		t.Fatalf("session id = %q, want requested session", got.SessionID)
+	}
+	if got.Model != "claude-sonnet-4-6" {
+		t.Fatalf("model = %q, want explicit model", got.Model)
 	}
 }
 

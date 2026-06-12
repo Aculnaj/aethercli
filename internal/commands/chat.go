@@ -37,6 +37,9 @@ func newChatCommand(deps Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if len(args) == 0 && !deps.StdinHasData() {
+				return runTUI(cmd.Context(), deps, cfg, apiKey, opts)
+			}
 			resolvedPrompt, err := prompt.Resolve(prompt.Options{
 				Args:         args,
 				Stdin:        deps.In,
@@ -62,6 +65,26 @@ func newChatCommand(deps Deps) *cobra.Command {
 	cmd.Flags().StringVar(&opts.sessionID, "session", "", "resume a specific session ID")
 	cmd.Flags().StringArrayVarP(&opts.files, "file", "f", nil, "include a file as prompt context")
 	cmd.Flags().StringArrayVar(&opts.contextDirs, "context", nil, "include a directory as prompt context")
+	return cmd
+}
+
+func newTUICommand(deps Deps) *cobra.Command {
+	opts := chatOptions{}
+	cmd := &cobra.Command{
+		Use:   "tui",
+		Short: "Start the interactive Bubble Tea chat UI",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			reader := bufio.NewReader(deps.In)
+			cfg, apiKey, err := ensureConfigured(deps, reader, true)
+			if err != nil {
+				return err
+			}
+			return runTUI(cmd.Context(), deps, cfg, apiKey, opts)
+		},
+	}
+	cmd.Flags().StringVarP(&opts.model, "model", "m", "", "chat model ID")
+	cmd.Flags().BoolVar(&opts.resume, "resume", false, "resume the latest saved session")
+	cmd.Flags().StringVar(&opts.sessionID, "session", "", "resume a specific session ID")
 	return cmd
 }
 

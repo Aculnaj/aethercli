@@ -81,7 +81,17 @@ Start interactive mode:
 aether
 ```
 
-Start or resume a saved chat session:
+Start the Bubble Tea chat TUI:
+
+```sh
+aether chat
+aether tui
+```
+
+Inside the TUI, type `/help` for commands such as `/models`, `/sessions`,
+`/resume <id>`, `/new`, `/clear`, and `/quit`.
+
+Send or resume a saved chat session without opening the TUI:
 
 ```sh
 aether chat "Help me debug this failing test"
