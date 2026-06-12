@@ -277,9 +277,9 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) updateModelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "up", "k":
+	case "up":
 		m.moveModelCursor(-1)
-	case "down", "j":
+	case "down":
 		m.moveModelCursor(1)
 	case "pgup":
 		m.moveModelCursor(-m.modelListHeight())

@@ -116,6 +116,25 @@ func TestModelsCommandSearchesAndScrollsLongModelList(t *testing.T) {
 	}
 }
 
+func TestModelSearchAcceptsVimNavigationLettersAsQueryText(t *testing.T) {
+	model := newTestModel(t, &fakeClient{models: []api.Model{
+		{ID: "kimi-k2", Endpoint: "/v1/chat/completions"},
+		{ID: "jamba-large", Endpoint: "/v1/chat/completions"},
+	}})
+
+	if err := model.showModels(context.Background()); err != nil {
+		t.Fatalf("showModels returned error: %v", err)
+	}
+	model.updateModelsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	if model.modelQuery != "k" {
+		t.Fatalf("model query = %q, want k to be searchable text", model.modelQuery)
+	}
+	model.updateModelsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	if model.modelQuery != "kj" {
+		t.Fatalf("model query = %q, want j to be searchable text", model.modelQuery)
+	}
+}
+
 func TestModelCommandWithoutArgumentShowsCurrentModelDetailsAndCanSwitch(t *testing.T) {
 	client := &fakeClient{models: []api.Model{
 		{
