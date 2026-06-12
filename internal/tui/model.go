@@ -335,7 +335,7 @@ func (m *Model) View() string {
 	if m.quitting {
 		return ""
 	}
-	header := headerStyle.Width(m.panelWidth()).Render(fmt.Sprintf("Aether Chat\nmodel %s  session %s", m.activeModel, m.displaySessionID()))
+	header := headerStyle.Width(m.panelWidth()).Render(fmt.Sprintf("Aether Chat  model %s  session %s", m.activeModel, m.displaySessionID()))
 	body := m.viewport.View()
 	bodyTitle := "Chat"
 	if m.mode == modeModels {
@@ -355,12 +355,12 @@ func (m *Model) View() string {
 	if suggestions := m.renderSlashSuggestions(); suggestions != "" {
 		body = lipgloss.JoinVertical(lipgloss.Left, body, suggestions)
 	}
-	status := statusPanelStyle.Width(m.panelWidth()).Render(panelContent("Status", m.status))
+	status := statusPanelStyle.Width(m.panelWidth()).Render(inlinePanelContent("Status", m.status))
 	input := m.input.View()
 	if m.streaming {
 		input = ""
 	}
-	input = inputPanelStyle.Width(m.panelWidth()).Render(panelContent("Input", input))
+	input = inputPanelStyle.Width(m.panelWidth()).Render(inlinePanelContent("Input", input))
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, status, input)
 }
 
@@ -706,7 +706,7 @@ func (m *Model) renderModels() string {
 		b.WriteString("\n\n")
 	}
 	fmt.Fprintf(&b, "Search: %s\n", m.modelQuery)
-	fmt.Fprintf(&b, "Showing %d of %d chat models. Type to filter, Enter to switch, Esc to close.\n\n", len(models), len(m.models))
+	fmt.Fprintf(&b, "%d/%d chat models - type filter, Enter switch\n\n", len(models), len(m.models))
 	if len(models) == 0 {
 		b.WriteString(mutedStyle.Render("No matching chat models."))
 		return b.String()
@@ -1057,6 +1057,14 @@ func panelContent(title, content string) string {
 		content = " "
 	}
 	return panelTitleStyle.Render(title) + "\n" + content
+}
+
+func inlinePanelContent(title, content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		content = " "
+	}
+	return panelTitleStyle.Render(title) + " " + content
 }
 
 func configWithDefaults(cfg config.Config) config.Config {

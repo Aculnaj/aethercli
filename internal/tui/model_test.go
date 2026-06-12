@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Aculnaj/aethercli/internal/api"
 	"github.com/Aculnaj/aethercli/internal/config"
@@ -79,6 +80,34 @@ func TestModelsCommandFiltersChatModelsAndSelectionSetsActiveModel(t *testing.T)
 	}
 	if model.mode != modeChat {
 		t.Fatalf("mode = %v, want chat mode after selection", model.mode)
+	}
+}
+
+func TestModelsViewFitsTerminalWidthAndShowsRows(t *testing.T) {
+	model := newTestModel(t, &fakeClient{models: []api.Model{
+		{ID: "claude-sonnet-4-6", Endpoint: "/v1/chat/completions", OwnedBy: "Anthropic", Context: "200k"},
+		{ID: "kimi-k2", Endpoint: "/v1/chat/completions", OwnedBy: "Moonshot", Context: "128k"},
+	}})
+	model.width = 60
+	model.height = 18
+
+	if err := model.showModels(context.Background()); err != nil {
+		t.Fatalf("showModels returned error: %v", err)
+	}
+	view := model.View()
+	lines := strings.Split(view, "\n")
+	for _, want := range []string{"Models", "claude-sonnet-4-6", "kimi-k2"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view = %q, want visible model content %q", view, want)
+		}
+	}
+	if len(lines) > model.height {
+		t.Fatalf("view line count = %d > terminal height %d:\n%s", len(lines), model.height, view)
+	}
+	for _, line := range lines {
+		if width := lipgloss.Width(line); width > model.width {
+			t.Fatalf("line width = %d > terminal width %d: %q", width, model.width, line)
+		}
 	}
 }
 
