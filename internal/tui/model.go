@@ -173,7 +173,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.viewport.Width = max(20, msg.Width)
-		m.viewport.Height = max(5, msg.Height-5)
+		m.viewport.Height = max(5, msg.Height-9)
 		m.refreshViewport()
 		return m, nil
 	case tea.KeyMsg:
@@ -335,25 +335,32 @@ func (m *Model) View() string {
 	if m.quitting {
 		return ""
 	}
-	header := headerStyle.Width(m.width).Render(fmt.Sprintf("Aether Chat  model=%s  session=%s", m.activeModel, m.displaySessionID()))
+	header := headerStyle.Width(m.panelWidth()).Render(fmt.Sprintf("Aether Chat\nmodel %s  session %s", m.activeModel, m.displaySessionID()))
 	body := m.viewport.View()
+	bodyTitle := "Chat"
 	if m.mode == modeModels {
 		body = m.renderModels()
+		bodyTitle = "Models"
 	} else if m.mode == modeSessions {
 		body = m.renderSessions()
+		bodyTitle = "Sessions"
 	} else if m.helpVisible {
 		body = m.renderHelp()
+		bodyTitle = "Help"
 	} else if m.usageVisible {
 		body = m.renderUsage()
+		bodyTitle = "Usage"
 	}
+	body = contentPanelStyle.Width(m.panelWidth()).Render(panelContent(bodyTitle, body))
 	if suggestions := m.renderSlashSuggestions(); suggestions != "" {
 		body = lipgloss.JoinVertical(lipgloss.Left, body, suggestions)
 	}
-	status := statusStyle.Width(m.width).Render(m.status)
+	status := statusPanelStyle.Width(m.panelWidth()).Render(panelContent("Status", m.status))
 	input := m.input.View()
 	if m.streaming {
 		input = ""
 	}
+	input = inputPanelStyle.Width(m.panelWidth()).Render(panelContent("Input", input))
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, status, input)
 }
 
@@ -672,19 +679,17 @@ func (m *Model) refreshViewport() {
 
 func (m *Model) renderMessages() string {
 	if len(m.messages) == 0 {
-		return mutedStyle.Render("No messages yet.")
+		return emptyPanelStyle.Width(m.innerPanelWidth()).Render("No messages yet.")
 	}
 	var b strings.Builder
 	for _, message := range m.messages {
 		label := "User"
-		style := userStyle
+		style := userMessageStyle
 		if message.Role == "assistant" {
 			label = "Aether"
-			style = assistantStyle
+			style = assistantMessageStyle
 		}
-		b.WriteString(style.Render(label))
-		b.WriteString("\n")
-		b.WriteString(message.Content)
+		b.WriteString(style.Width(m.innerPanelWidth()).Render(label + "\n" + message.Content))
 		b.WriteString("\n\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -711,10 +716,14 @@ func (m *Model) renderModels() string {
 	for i := start; i < end; i++ {
 		model := models[i]
 		cursor := " "
+		rowStyle := modelRowStyle
 		if i == m.modelCursor {
 			cursor = ">"
+			rowStyle = selectedRowStyle
 		}
-		fmt.Fprintf(&b, "%s %s  %s  %s\n", cursor, model.ID, model.OwnedBy, model.Context)
+		row := fmt.Sprintf("%s %s  %s  %s", cursor, model.ID, model.OwnedBy, model.Context)
+		b.WriteString(rowStyle.Width(m.innerPanelWidth()).Render(row))
+		b.WriteByte('\n')
 	}
 	return b.String()
 }
@@ -736,10 +745,14 @@ func (m *Model) renderSessions() string {
 	var b strings.Builder
 	for i, item := range m.sessions {
 		cursor := " "
+		rowStyle := modelRowStyle
 		if i == m.sessionCursor {
 			cursor = ">"
+			rowStyle = selectedRowStyle
 		}
-		fmt.Fprintf(&b, "%s %s  %s  %d messages  %s\n", cursor, item.ID, item.Model, item.Messages, item.Title)
+		row := fmt.Sprintf("%s %s  %s  %d messages  %s", cursor, item.ID, item.Model, item.Messages, item.Title)
+		b.WriteString(rowStyle.Width(m.innerPanelWidth()).Render(row))
+		b.WriteByte('\n')
 	}
 	return b.String()
 }
@@ -844,7 +857,7 @@ func (m *Model) renderSlashSuggestions() string {
 		}
 		fmt.Fprintf(&b, "%s %-14s %s\n", prefix, suggestion.usage, suggestion.description)
 	}
-	return suggestionStyle.Render(strings.TrimRight(b.String(), "\n"))
+	return suggestionStyle.Width(m.panelWidth()).Render(strings.TrimRight(b.String(), "\n"))
 }
 
 type slashSuggestion struct {
@@ -1030,6 +1043,22 @@ func (m *Model) displaySessionID() string {
 	return m.sessionID
 }
 
+func (m *Model) panelWidth() int {
+	return max(30, m.width-2)
+}
+
+func (m *Model) innerPanelWidth() int {
+	return max(24, m.panelWidth()-6)
+}
+
+func panelContent(title, content string) string {
+	content = strings.TrimRight(content, "\n")
+	if content == "" {
+		content = " "
+	}
+	return panelTitleStyle.Render(title) + "\n" + content
+}
+
 func configWithDefaults(cfg config.Config) config.Config {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = config.DefaultBaseURL
@@ -1068,11 +1097,78 @@ func trimLastRune(value string) string {
 }
 
 var (
-	readyStatus     = "Ready."
-	headerStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("62")).Padding(0, 1)
-	statusStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	mutedStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	userStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	assistantStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
-	suggestionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
+	readyStatus = "Ready."
+
+	panelTitleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("250")).
+			Background(lipgloss.Color("238")).
+			Padding(0, 1)
+
+	headerStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("230")).
+			Background(lipgloss.Color("23")).
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("36")).
+			Padding(0, 1)
+
+	contentPanelStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("252")).
+				Background(lipgloss.Color("234")).
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("240")).
+				Padding(0, 1)
+
+	statusPanelStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("250")).
+				Background(lipgloss.Color("235")).
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("58")).
+				Padding(0, 1)
+
+	inputPanelStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("252")).
+			Background(lipgloss.Color("235")).
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("31")).
+			Padding(0, 1)
+
+	emptyPanelStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("244")).
+			Background(lipgloss.Color("236")).
+			Padding(1, 2)
+
+	mutedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+
+	userMessageStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("254")).
+				Background(lipgloss.Color("236")).
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("31")).
+				Padding(0, 1)
+
+	assistantMessageStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("254")).
+				Background(lipgloss.Color("235")).
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("35")).
+				Padding(0, 1)
+
+	modelRowStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("250")).
+			Padding(0, 1)
+
+	selectedRowStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("230")).
+				Background(lipgloss.Color("24")).
+				Padding(0, 1)
+
+	suggestionStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("250")).
+			Background(lipgloss.Color("235")).
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("66")).
+			Padding(0, 1)
 )

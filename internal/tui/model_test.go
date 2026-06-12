@@ -215,6 +215,19 @@ func TestStreamingViewDoesNotDuplicateStreamingStatus(t *testing.T) {
 	}
 }
 
+func TestViewRendersFramedPanelsForNavigation(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	model.width = 90
+	model.input.SetValue("/")
+
+	view := model.View()
+	for _, want := range []string{"Aether Chat", "Chat", "Commands", "Status", "Input"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view = %q, want framed section %q", view, want)
+		}
+	}
+}
+
 func TestSendPromptKeepsUserMessageAndDoesNotSaveAssistantOnStreamError(t *testing.T) {
 	client := &fakeClient{
 		streamDeltas: []string{"partial"},
