@@ -193,7 +193,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = err.Error()
 			return m, nil
 		}
-		m.status = "Saved."
+		m.status = readyStatus
 		m.refreshViewport()
 		return m, nil
 	}
@@ -343,7 +343,7 @@ func (m *Model) View() string {
 	status := statusStyle.Width(m.width).Render(m.status)
 	input := m.input.View()
 	if m.streaming {
-		input = mutedStyle.Render("Streaming response...")
+		input = ""
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, status, input)
 }
@@ -538,7 +538,7 @@ func (m *Model) sendPrompt(ctx context.Context, prompt string) error {
 		m.status = err.Error()
 		return err
 	}
-	m.status = "Saved."
+	m.status = readyStatus
 	m.refreshViewport()
 	return nil
 }
@@ -973,6 +973,7 @@ func trimLastRune(value string) string {
 }
 
 var (
+	readyStatus     = "Ready."
 	headerStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("62")).Padding(0, 1)
 	statusStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	mutedStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))

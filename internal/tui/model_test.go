@@ -195,6 +195,23 @@ func TestSendPromptStreamsDeltasAndSavesAfterSuccess(t *testing.T) {
 	if saved.Messages[1].Content != "hello" {
 		t.Fatalf("saved assistant = %q, want streamed response", saved.Messages[1].Content)
 	}
+	if model.status == "Saved." {
+		t.Fatalf("status = %q, want neutral status after successful save", model.status)
+	}
+}
+
+func TestStreamingViewDoesNotDuplicateStreamingStatus(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	model.streaming = true
+	model.status = "Streaming..."
+
+	view := model.View()
+	if strings.Contains(view, "Streaming response...") {
+		t.Fatalf("view = %q, want no duplicate streaming input label", view)
+	}
+	if count := strings.Count(view, "Streaming..."); count != 1 {
+		t.Fatalf("view = %q, streaming status count = %d, want 1", view, count)
+	}
 }
 
 func TestSendPromptKeepsUserMessageAndDoesNotSaveAssistantOnStreamError(t *testing.T) {
