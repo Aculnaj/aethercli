@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Aculnaj/aethercli/internal/api"
 	"github.com/Aculnaj/aethercli/internal/config"
@@ -79,6 +80,34 @@ func TestModelsCommandFiltersChatModelsAndSelectionSetsActiveModel(t *testing.T)
 	}
 	if model.mode != modeChat {
 		t.Fatalf("mode = %v, want chat mode after selection", model.mode)
+	}
+}
+
+func TestModelsViewFitsTerminalWidthAndShowsRows(t *testing.T) {
+	model := newTestModel(t, &fakeClient{models: []api.Model{
+		{ID: "claude-sonnet-4-6", Endpoint: "/v1/chat/completions", OwnedBy: "Anthropic", Context: "200k"},
+		{ID: "kimi-k2", Endpoint: "/v1/chat/completions", OwnedBy: "Moonshot", Context: "128k"},
+	}})
+	model.width = 60
+	model.height = 18
+
+	if err := model.showModels(context.Background()); err != nil {
+		t.Fatalf("showModels returned error: %v", err)
+	}
+	view := model.View()
+	lines := strings.Split(view, "\n")
+	for _, want := range []string{"Models", "claude-sonnet-4-6", "kimi-k2"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view = %q, want visible model content %q", view, want)
+		}
+	}
+	if len(lines) > model.height {
+		t.Fatalf("view line count = %d > terminal height %d:\n%s", len(lines), model.height, view)
+	}
+	for _, line := range lines {
+		if width := lipgloss.Width(line); width > model.width {
+			t.Fatalf("line width = %d > terminal width %d: %q", width, model.width, line)
+		}
 	}
 }
 
@@ -176,6 +205,71 @@ func TestModelCommandWithoutArgumentShowsCurrentModelDetailsAndCanSwitch(t *test
 	}
 }
 
+func TestMouseWheelScrollsChatViewport(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	model.viewport.Height = 4
+	for i := range 20 {
+		model.messages = append(model.messages, session.Message{Role: "assistant", Content: "message line " + string(rune('a'+i))})
+	}
+	model.refreshViewport()
+	bottomOffset := model.viewport.YOffset
+	if bottomOffset == 0 {
+		t.Fatalf("viewport offset = 0, want scrollable content")
+	}
+
+	updated, _ := model.Update(tea.MouseMsg{Type: tea.MouseWheelUp, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	model = updated.(*Model)
+	if model.viewport.YOffset >= bottomOffset {
+		t.Fatalf("viewport offset = %d, want less than bottom offset %d after wheel up", model.viewport.YOffset, bottomOffset)
+	}
+}
+
+func TestMouseWheelScrollsModelList(t *testing.T) {
+	models := make([]api.Model, 0, 20)
+	for i := range 20 {
+		models = append(models, api.Model{ID: "chat-model-" + string(rune('a'+i)), Endpoint: "/v1/chat/completions"})
+	}
+	model := newTestModel(t, &fakeClient{models: models})
+	model.height = 10
+	if err := model.showModels(context.Background()); err != nil {
+		t.Fatalf("showModels returned error: %v", err)
+	}
+
+	updated, _ := model.Update(tea.MouseMsg{Type: tea.MouseWheelDown, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	model = updated.(*Model)
+	if model.modelCursor == 0 || model.modelScroll == 0 {
+		t.Fatalf("model cursor=%d scroll=%d, want mouse wheel to move list", model.modelCursor, model.modelScroll)
+	}
+
+	updated, _ = model.Update(tea.MouseMsg{Type: tea.MouseWheelUp, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	model = updated.(*Model)
+	if model.modelCursor != 0 || model.modelScroll != 0 {
+		t.Fatalf("model cursor=%d scroll=%d, want wheel up to return to top", model.modelCursor, model.modelScroll)
+	}
+}
+
+func TestMouseClickSelectsModelRow(t *testing.T) {
+	model := newTestModel(t, &fakeClient{models: []api.Model{
+		{ID: "chat-a", Endpoint: "/v1/chat/completions"},
+		{ID: "chat-b", Endpoint: "/v1/chat/completions"},
+		{ID: "chat-c", Endpoint: "/v1/chat/completions"},
+	}})
+	if err := model.showModels(context.Background()); err != nil {
+		t.Fatalf("showModels returned error: %v", err)
+	}
+
+	updated, _ := model.Update(tea.MouseMsg{
+		Type:   tea.MouseLeft,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+		Y:      model.modelRowsStartY() + 1,
+	})
+	model = updated.(*Model)
+	if model.activeModel != "chat-b" || model.mode != modeChat {
+		t.Fatalf("active model=%q mode=%v, want clicked row selected", model.activeModel, model.mode)
+	}
+}
+
 func TestSendPromptStreamsDeltasAndSavesAfterSuccess(t *testing.T) {
 	client := &fakeClient{streamDeltas: []string{"hel", "lo"}}
 	model := newTestModel(t, client)
@@ -221,9 +315,37 @@ func TestViewRendersFramedPanelsForNavigation(t *testing.T) {
 	model.input.SetValue("/")
 
 	view := model.View()
-	for _, want := range []string{"Aether Chat", "Chat", "Commands", "Status", "Input"} {
+	for _, want := range []string{"Aether Chat", "Chat", "Commands", "Input"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view = %q, want framed section %q", view, want)
+		}
+	}
+}
+
+func TestViewRendersLowKeyStatusBelowInput(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	model.width = 90
+	model.status = "Ready."
+	model.input.SetValue("hello")
+
+	view := model.View()
+	if strings.Contains(view, "Status") {
+		t.Fatalf("view = %q, want status without heading", view)
+	}
+	inputIndex := strings.LastIndex(view, "> hello")
+	if inputIndex == -1 {
+		t.Fatalf("view = %q, want rendered input", view)
+	}
+	statusIndex := strings.LastIndex(view, "Ready.")
+	if statusIndex == -1 {
+		t.Fatalf("view = %q, want rendered status", view)
+	}
+	if statusIndex <= inputIndex {
+		t.Fatalf("view = %q, want status below input", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "Ready.") && strings.ContainsAny(line, "│┌┐└┘─") {
+			t.Fatalf("status line = %q, want no frame", line)
 		}
 	}
 }
@@ -303,6 +425,44 @@ func TestSessionCommandsLoadResumeNewClearHelpAndQuitState(t *testing.T) {
 	}
 }
 
+func TestMouseWheelAndClickSelectSessions(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	first, err := model.store.New("gpt-4o", "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := model.store.Save(first); err != nil {
+		t.Fatal(err)
+	}
+	second, err := model.store.New("gpt-4o", "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := model.store.Save(second); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := model.showSessions(); err != nil {
+		t.Fatalf("showSessions returned error: %v", err)
+	}
+	updated, _ := model.Update(tea.MouseMsg{Type: tea.MouseWheelDown, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	model = updated.(*Model)
+	if model.sessionCursor != 1 {
+		t.Fatalf("session cursor = %d, want wheel down to move selection", model.sessionCursor)
+	}
+
+	updated, _ = model.Update(tea.MouseMsg{
+		Type:   tea.MouseLeft,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+		Y:      model.sessionRowsStartY(),
+	})
+	model = updated.(*Model)
+	if model.sessionID != model.sessions[0].ID || model.mode != modeChat {
+		t.Fatalf("session id=%q mode=%v, want clicked session loaded", model.sessionID, model.mode)
+	}
+}
+
 func TestUsageCommandShowsCurrentSessionUsageAndDoesNotBlockInput(t *testing.T) {
 	model := newTestModel(t, &fakeClient{})
 	item, err := model.store.New("gpt-4o", "usage chat")
@@ -316,7 +476,9 @@ func TestUsageCommandShowsCurrentSessionUsageAndDoesNotBlockInput(t *testing.T) 
 	}
 	model.loadSession(item)
 
-	model.showUsage()
+	if err := model.showUsage(context.Background()); err != nil {
+		t.Fatalf("showUsage returned error: %v", err)
+	}
 	if !model.usageVisible {
 		t.Fatalf("usage visible = false, want usage overlay")
 	}
@@ -331,6 +493,63 @@ func TestUsageCommandShowsCurrentSessionUsageAndDoesNotBlockInput(t *testing.T) 
 	model = updated.(*Model)
 	if model.usageVisible || model.input.Value() != "n" {
 		t.Fatalf("usage visible=%v input=%q, want usage dismissed and input accepted", model.usageVisible, model.input.Value())
+	}
+}
+
+func TestUsageCommandCalculatesCostAcrossModelSwitches(t *testing.T) {
+	client := &fakeClient{models: []api.Model{
+		{ID: "cheap-chat", Endpoint: "/v1/chat/completions", OurPrice: "$1 / 1M input tokens, $2 / 1M output tokens"},
+		{ID: "expensive-chat", Endpoint: "/v1/chat/completions", OurPrice: "$10 / 1M input tokens, $20 / 1M output tokens"},
+	}}
+	model := newTestModel(t, client)
+	model.activeModel = "expensive-chat"
+	model.current = session.Session{
+		ID:    "usage-session",
+		Model: "expensive-chat",
+		Messages: []session.Message{
+			{Role: "user", Content: strings.Repeat("a", 400), Model: "cheap-chat"},
+			{Role: "assistant", Content: strings.Repeat("b", 800), Model: "cheap-chat"},
+			{Role: "user", Content: strings.Repeat("c", 400), Model: "expensive-chat"},
+			{Role: "assistant", Content: strings.Repeat("d", 800), Model: "expensive-chat"},
+		},
+	}
+
+	if err := model.showUsage(context.Background()); err != nil {
+		t.Fatalf("showUsage returned error: %v", err)
+	}
+
+	rendered := model.renderUsage()
+	for _, want := range []string{
+		"Estimated cost: $0.005500",
+		"cheap-chat: input 100, output 200, cost $0.000500",
+		"expensive-chat: input 100, output 200, cost $0.005000",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("usage = %q, want %q", rendered, want)
+		}
+	}
+}
+
+func TestCompletedTurnsStoreTheModelUsedForUsageCosting(t *testing.T) {
+	client := &fakeClient{streamDeltas: []string{"answer"}}
+	model := newTestModel(t, client)
+	model.activeModel = "first-model"
+	if err := model.sendPrompt(context.Background(), "first prompt"); err != nil {
+		t.Fatalf("sendPrompt returned error: %v", err)
+	}
+	model.activeModel = "second-model"
+	if err := model.sendPrompt(context.Background(), "second prompt"); err != nil {
+		t.Fatalf("sendPrompt returned error: %v", err)
+	}
+
+	if len(model.current.Messages) != 4 {
+		t.Fatalf("saved messages = %d, want two turns", len(model.current.Messages))
+	}
+	if got := model.current.Messages[0].Model; got != "first-model" {
+		t.Fatalf("first turn model = %q, want first-model", got)
+	}
+	if got := model.current.Messages[2].Model; got != "second-model" {
+		t.Fatalf("second turn model = %q, want second-model", got)
 	}
 }
 
@@ -354,10 +573,31 @@ func TestSlashInputShowsFilteredCommandSuggestions(t *testing.T) {
 	model.input.SetValue("/mo")
 	updated, _ := model.updateKey(tea.KeyMsg{Type: tea.KeyDown})
 	model = updated.(*Model)
-	updated, _ = model.updateKey(tea.KeyMsg{Type: tea.KeyTab})
-	model = updated.(*Model)
 	if model.input.Value() != "/model " {
-		t.Fatalf("input = %q, want selected slash suggestion completed", model.input.Value())
+		t.Fatalf("input = %q, want selected slash suggestion completed automatically", model.input.Value())
+	}
+}
+
+func TestSlashSelectionAutocompletesInputAndKeepsCyclingMatches(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	model.input.SetValue("/")
+
+	updated, _ := model.updateKey(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(*Model)
+	if got := model.input.Value(); got != "/model " {
+		t.Fatalf("input = %q, want selected slash command completed", got)
+	}
+
+	updated, _ = model.updateKey(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(*Model)
+	if got := model.input.Value(); got != "/sessions" {
+		t.Fatalf("input = %q, want next original slash match completed", got)
+	}
+
+	updated, _ = model.updateKey(tea.KeyMsg{Type: tea.KeyUp})
+	model = updated.(*Model)
+	if got := model.input.Value(); got != "/model " {
+		t.Fatalf("input = %q, want previous original slash match completed", got)
 	}
 }
 
