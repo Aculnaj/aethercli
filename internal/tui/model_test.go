@@ -44,6 +44,7 @@ func TestParseSlashCommandRecognizesV1Commands(t *testing.T) {
 		"/resume abc123": {name: "resume", arg: "abc123"},
 		"/new":           {name: "new"},
 		"/clear":         {name: "clear"},
+		"/usage":         {name: "usage"},
 		"/help":          {name: "help"},
 		"/quit":          {name: "quit"},
 	}
@@ -116,6 +117,25 @@ func TestModelsCommandSearchesAndScrollsLongModelList(t *testing.T) {
 	}
 }
 
+func TestModelSearchAcceptsVimNavigationLettersAsQueryText(t *testing.T) {
+	model := newTestModel(t, &fakeClient{models: []api.Model{
+		{ID: "kimi-k2", Endpoint: "/v1/chat/completions"},
+		{ID: "jamba-large", Endpoint: "/v1/chat/completions"},
+	}})
+
+	if err := model.showModels(context.Background()); err != nil {
+		t.Fatalf("showModels returned error: %v", err)
+	}
+	model.updateModelsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	if model.modelQuery != "k" {
+		t.Fatalf("model query = %q, want k to be searchable text", model.modelQuery)
+	}
+	model.updateModelsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	if model.modelQuery != "kj" {
+		t.Fatalf("model query = %q, want j to be searchable text", model.modelQuery)
+	}
+}
+
 func TestModelCommandWithoutArgumentShowsCurrentModelDetailsAndCanSwitch(t *testing.T) {
 	client := &fakeClient{models: []api.Model{
 		{
@@ -175,6 +195,36 @@ func TestSendPromptStreamsDeltasAndSavesAfterSuccess(t *testing.T) {
 	}
 	if saved.Messages[1].Content != "hello" {
 		t.Fatalf("saved assistant = %q, want streamed response", saved.Messages[1].Content)
+	}
+	if model.status == "Saved." {
+		t.Fatalf("status = %q, want neutral status after successful save", model.status)
+	}
+}
+
+func TestStreamingViewDoesNotDuplicateStreamingStatus(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	model.streaming = true
+	model.status = "Streaming..."
+
+	view := model.View()
+	if strings.Contains(view, "Streaming response...") {
+		t.Fatalf("view = %q, want no duplicate streaming input label", view)
+	}
+	if count := strings.Count(view, "Streaming..."); count != 1 {
+		t.Fatalf("view = %q, streaming status count = %d, want 1", view, count)
+	}
+}
+
+func TestViewRendersFramedPanelsForNavigation(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	model.width = 90
+	model.input.SetValue("/")
+
+	view := model.View()
+	for _, want := range []string{"Aether Chat", "Chat", "Commands", "Status", "Input"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view = %q, want framed section %q", view, want)
+		}
 	}
 }
 
@@ -253,12 +303,43 @@ func TestSessionCommandsLoadResumeNewClearHelpAndQuitState(t *testing.T) {
 	}
 }
 
+func TestUsageCommandShowsCurrentSessionUsageAndDoesNotBlockInput(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	item, err := model.store.New("gpt-4o", "usage chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.store.Append(&item, "user", "hello usage")
+	model.store.Append(&item, "assistant", "usage answer")
+	if err := model.store.Save(item); err != nil {
+		t.Fatal(err)
+	}
+	model.loadSession(item)
+
+	model.showUsage()
+	if !model.usageVisible {
+		t.Fatalf("usage visible = false, want usage overlay")
+	}
+	rendered := model.renderUsage()
+	for _, want := range []string{"Session usage", item.ID, "Messages: 2", "Estimated tokens:"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("usage = %q, want %q", rendered, want)
+		}
+	}
+
+	updated, _ := model.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	model = updated.(*Model)
+	if model.usageVisible || model.input.Value() != "n" {
+		t.Fatalf("usage visible=%v input=%q, want usage dismissed and input accepted", model.usageVisible, model.input.Value())
+	}
+}
+
 func TestSlashInputShowsFilteredCommandSuggestions(t *testing.T) {
 	model := newTestModel(t, &fakeClient{})
 
 	model.input.SetValue("/")
 	rendered := model.View()
-	for _, want := range []string{"/models", "/model <id>", "/help"} {
+	for _, want := range []string{"/models", "/model <id>", "/usage", "/help"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("view = %q, want slash suggestion %q", rendered, want)
 		}
@@ -277,6 +358,41 @@ func TestSlashInputShowsFilteredCommandSuggestions(t *testing.T) {
 	model = updated.(*Model)
 	if model.input.Value() != "/model " {
 		t.Fatalf("input = %q, want selected slash suggestion completed", model.input.Value())
+	}
+}
+
+func TestSlashSuggestionArrowKeysWrapAround(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	model.input.SetValue("/")
+
+	updated, _ := model.updateKey(tea.KeyMsg{Type: tea.KeyUp})
+	model = updated.(*Model)
+	suggestions := model.currentSlashSuggestions()
+	if model.slashCursor != len(suggestions)-1 {
+		t.Fatalf("slash cursor = %d, want up from first suggestion to wrap to last", model.slashCursor)
+	}
+
+	updated, _ = model.updateKey(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(*Model)
+	if model.slashCursor != 0 {
+		t.Fatalf("slash cursor = %d, want down from last suggestion to wrap to first", model.slashCursor)
+	}
+}
+
+func TestEnterConfirmsSingleSlashCommandSuggestion(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	model.input.SetValue("/he")
+
+	updated, cmd := model.updateKey(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(*Model)
+	if cmd != nil {
+		t.Fatalf("cmd = %#v, want no async command for help suggestion", cmd)
+	}
+	if !model.helpVisible {
+		t.Fatalf("help visible = false, want Enter to execute the only matching slash command")
+	}
+	if model.input.Value() != "" {
+		t.Fatalf("input = %q, want confirmed command to clear input", model.input.Value())
 	}
 }
 

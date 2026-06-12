@@ -70,6 +70,7 @@ type Model struct {
 	mode          mode
 	status        string
 	helpVisible   bool
+	usageVisible  bool
 	slashCursor   int
 	input         textinput.Model
 	viewport      viewport.Model
@@ -172,7 +173,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.viewport.Width = max(20, msg.Width)
-		m.viewport.Height = max(5, msg.Height-5)
+		m.viewport.Height = max(5, msg.Height-9)
 		m.refreshViewport()
 		return m, nil
 	case tea.KeyMsg:
@@ -193,7 +194,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = err.Error()
 			return m, nil
 		}
-		m.status = "Saved."
+		m.status = readyStatus
 		m.refreshViewport()
 		return m, nil
 	}
@@ -218,6 +219,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.input.SetValue("")
 		m.helpVisible = false
+		m.usageVisible = false
 		return m, nil
 	}
 
@@ -256,19 +258,24 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.input.SetValue("")
 		if strings.HasPrefix(value, "/") {
+			if resolved, ok := m.resolveSingleSlashSuggestion(value); ok {
+				value = resolved
+			}
 			return m, m.handleSlashCommand(value)
 		}
 		return m, m.beginStream(value)
 	case "ctrl+n":
 		m.helpVisible = false
+		m.usageVisible = false
 		m.input.SetValue(m.input.Value() + "\n")
 		m.input.CursorEnd()
 		return m, nil
 	}
 
 	var cmd tea.Cmd
-	if m.helpVisible {
+	if m.helpVisible || m.usageVisible {
 		m.helpVisible = false
+		m.usageVisible = false
 	}
 	m.input, cmd = m.input.Update(msg)
 	m.clampSlashCursor()
@@ -277,9 +284,9 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) updateModelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "up", "k":
+	case "up":
 		m.moveModelCursor(-1)
-	case "down", "j":
+	case "down":
 		m.moveModelCursor(1)
 	case "pgup":
 		m.moveModelCursor(-m.modelListHeight())
@@ -328,23 +335,32 @@ func (m *Model) View() string {
 	if m.quitting {
 		return ""
 	}
-	header := headerStyle.Width(m.width).Render(fmt.Sprintf("Aether Chat  model=%s  session=%s", m.activeModel, m.displaySessionID()))
+	header := headerStyle.Width(m.panelWidth()).Render(fmt.Sprintf("Aether Chat\nmodel %s  session %s", m.activeModel, m.displaySessionID()))
 	body := m.viewport.View()
+	bodyTitle := "Chat"
 	if m.mode == modeModels {
 		body = m.renderModels()
+		bodyTitle = "Models"
 	} else if m.mode == modeSessions {
 		body = m.renderSessions()
+		bodyTitle = "Sessions"
 	} else if m.helpVisible {
 		body = m.renderHelp()
+		bodyTitle = "Help"
+	} else if m.usageVisible {
+		body = m.renderUsage()
+		bodyTitle = "Usage"
 	}
+	body = contentPanelStyle.Width(m.panelWidth()).Render(panelContent(bodyTitle, body))
 	if suggestions := m.renderSlashSuggestions(); suggestions != "" {
 		body = lipgloss.JoinVertical(lipgloss.Left, body, suggestions)
 	}
-	status := statusStyle.Width(m.width).Render(m.status)
+	status := statusPanelStyle.Width(m.panelWidth()).Render(panelContent("Status", m.status))
 	input := m.input.View()
 	if m.streaming {
-		input = mutedStyle.Render("Streaming response...")
+		input = ""
 	}
+	input = inputPanelStyle.Width(m.panelWidth()).Render(panelContent("Input", input))
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, status, input)
 }
 
@@ -382,6 +398,8 @@ func (m *Model) handleSlashCommand(input string) tea.Cmd {
 		}
 	case "clear":
 		m.clearVisible()
+	case "usage":
+		m.showUsage()
 	case "help":
 		m.showHelp()
 	case "quit":
@@ -507,7 +525,15 @@ func (m *Model) clearVisible() {
 func (m *Model) showHelp() {
 	m.mode = modeChat
 	m.helpVisible = true
-	m.status = "/models /model <id> /sessions /resume <id> /new /clear /help /quit"
+	m.usageVisible = false
+	m.status = "/models /model <id> /sessions /resume <id> /new /clear /usage /help /quit"
+}
+
+func (m *Model) showUsage() {
+	m.mode = modeChat
+	m.helpVisible = false
+	m.usageVisible = true
+	m.status = "Session usage."
 }
 
 func (m *Model) requestQuit() {
@@ -538,7 +564,7 @@ func (m *Model) sendPrompt(ctx context.Context, prompt string) error {
 		m.status = err.Error()
 		return err
 	}
-	m.status = "Saved."
+	m.status = readyStatus
 	m.refreshViewport()
 	return nil
 }
@@ -653,19 +679,17 @@ func (m *Model) refreshViewport() {
 
 func (m *Model) renderMessages() string {
 	if len(m.messages) == 0 {
-		return mutedStyle.Render("No messages yet.")
+		return emptyPanelStyle.Width(m.innerPanelWidth()).Render("No messages yet.")
 	}
 	var b strings.Builder
 	for _, message := range m.messages {
 		label := "User"
-		style := userStyle
+		style := userMessageStyle
 		if message.Role == "assistant" {
 			label = "Aether"
-			style = assistantStyle
+			style = assistantMessageStyle
 		}
-		b.WriteString(style.Render(label))
-		b.WriteString("\n")
-		b.WriteString(message.Content)
+		b.WriteString(style.Width(m.innerPanelWidth()).Render(label + "\n" + message.Content))
 		b.WriteString("\n\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -692,10 +716,14 @@ func (m *Model) renderModels() string {
 	for i := start; i < end; i++ {
 		model := models[i]
 		cursor := " "
+		rowStyle := modelRowStyle
 		if i == m.modelCursor {
 			cursor = ">"
+			rowStyle = selectedRowStyle
 		}
-		fmt.Fprintf(&b, "%s %s  %s  %s\n", cursor, model.ID, model.OwnedBy, model.Context)
+		row := fmt.Sprintf("%s %s  %s  %s", cursor, model.ID, model.OwnedBy, model.Context)
+		b.WriteString(rowStyle.Width(m.innerPanelWidth()).Render(row))
+		b.WriteByte('\n')
 	}
 	return b.String()
 }
@@ -717,10 +745,14 @@ func (m *Model) renderSessions() string {
 	var b strings.Builder
 	for i, item := range m.sessions {
 		cursor := " "
+		rowStyle := modelRowStyle
 		if i == m.sessionCursor {
 			cursor = ">"
+			rowStyle = selectedRowStyle
 		}
-		fmt.Fprintf(&b, "%s %s  %s  %d messages  %s\n", cursor, item.ID, item.Model, item.Messages, item.Title)
+		row := fmt.Sprintf("%s %s  %s  %d messages  %s", cursor, item.ID, item.Model, item.Messages, item.Title)
+		b.WriteString(rowStyle.Width(m.innerPanelWidth()).Render(row))
+		b.WriteByte('\n')
 	}
 	return b.String()
 }
@@ -733,11 +765,73 @@ func (m *Model) renderHelp() string {
 		"/resume <id>   load a saved session",
 		"/new           start a new session",
 		"/clear         clear visible messages",
+		"/usage         show estimated usage for this session",
 		"/help          show this help",
 		"/quit          exit",
 		"",
 		"Enter sends. Ctrl+N inserts a newline. Esc closes overlays.",
 	}, "\n")
+}
+
+func (m *Model) renderUsage() string {
+	usage := m.sessionUsage()
+	return strings.Join([]string{
+		"Session usage",
+		"Session: " + usage.sessionID,
+		"Model: " + usage.model,
+		fmt.Sprintf("Messages: %d", usage.messages),
+		fmt.Sprintf("User messages: %d", usage.userMessages),
+		fmt.Sprintf("Assistant messages: %d", usage.assistantMessages),
+		fmt.Sprintf("Estimated user tokens: %d", usage.userTokens),
+		fmt.Sprintf("Estimated assistant tokens: %d", usage.assistantTokens),
+		fmt.Sprintf("Estimated tokens: %d", usage.totalTokens),
+		"",
+		"Estimates use the local 4 characters per token heuristic.",
+	}, "\n")
+}
+
+type sessionUsage struct {
+	sessionID         string
+	model             string
+	messages          int
+	userMessages      int
+	assistantMessages int
+	userTokens        int
+	assistantTokens   int
+	totalTokens       int
+}
+
+func (m *Model) sessionUsage() sessionUsage {
+	messages := m.current.Messages
+	if len(messages) == 0 {
+		messages = m.messages
+	}
+	usage := sessionUsage{
+		sessionID: m.displaySessionID(),
+		model:     m.activeModel,
+		messages:  len(messages),
+	}
+	for _, message := range messages {
+		tokens := estimateUsageTokens(message.Content)
+		switch message.Role {
+		case "user":
+			usage.userMessages++
+			usage.userTokens += tokens
+		case "assistant":
+			usage.assistantMessages++
+			usage.assistantTokens += tokens
+		}
+		usage.totalTokens += tokens
+	}
+	return usage
+}
+
+func estimateUsageTokens(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	return (len(text) + 3) / 4
 }
 
 func (m *Model) renderSlashSuggestions() string {
@@ -763,7 +857,7 @@ func (m *Model) renderSlashSuggestions() string {
 		}
 		fmt.Fprintf(&b, "%s %-14s %s\n", prefix, suggestion.usage, suggestion.description)
 	}
-	return suggestionStyle.Render(strings.TrimRight(b.String(), "\n"))
+	return suggestionStyle.Width(m.panelWidth()).Render(strings.TrimRight(b.String(), "\n"))
 }
 
 type slashSuggestion struct {
@@ -779,6 +873,7 @@ var slashSuggestions = []slashSuggestion{
 	{usage: "/resume <id>", name: "resume", description: "load a saved session"},
 	{usage: "/new", name: "new", description: "start a new session"},
 	{usage: "/clear", name: "clear", description: "clear visible messages"},
+	{usage: "/usage", name: "usage", description: "show estimated usage for this session"},
 	{usage: "/help", name: "help", description: "show command help"},
 	{usage: "/quit", name: "quit", description: "exit the TUI"},
 }
@@ -812,12 +907,9 @@ func (m *Model) moveSlashCursor(delta int) {
 		m.slashCursor = 0
 		return
 	}
-	m.slashCursor += delta
+	m.slashCursor = (m.slashCursor + delta) % len(suggestions)
 	if m.slashCursor < 0 {
-		m.slashCursor = 0
-	}
-	if m.slashCursor >= len(suggestions) {
-		m.slashCursor = len(suggestions) - 1
+		m.slashCursor += len(suggestions)
 	}
 }
 
@@ -856,6 +948,22 @@ func (m *Model) completeSlashSuggestion() {
 	suggestion := suggestions[m.normalizedSlashCursor(suggestions)]
 	m.input.SetValue(suggestion.completion())
 	m.input.CursorEnd()
+}
+
+func (m *Model) resolveSingleSlashSuggestion(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "/") {
+		return value, false
+	}
+	suggestions := filteredSlashSuggestions(strings.TrimPrefix(value, "/"))
+	if len(suggestions) != 1 {
+		return value, false
+	}
+	usage := suggestions[0].usage
+	if before, _, ok := strings.Cut(usage, " "); ok {
+		return before, true
+	}
+	return usage, true
 }
 
 func (s slashSuggestion) completion() string {
@@ -935,6 +1043,22 @@ func (m *Model) displaySessionID() string {
 	return m.sessionID
 }
 
+func (m *Model) panelWidth() int {
+	return max(30, m.width-2)
+}
+
+func (m *Model) innerPanelWidth() int {
+	return max(24, m.panelWidth()-6)
+}
+
+func panelContent(title, content string) string {
+	content = strings.TrimRight(content, "\n")
+	if content == "" {
+		content = " "
+	}
+	return panelTitleStyle.Render(title) + "\n" + content
+}
+
 func configWithDefaults(cfg config.Config) config.Config {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = config.DefaultBaseURL
@@ -973,10 +1097,78 @@ func trimLastRune(value string) string {
 }
 
 var (
-	headerStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15")).Background(lipgloss.Color("62")).Padding(0, 1)
-	statusStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	mutedStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	userStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	assistantStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
-	suggestionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250")).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
+	readyStatus = "Ready."
+
+	panelTitleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("250")).
+			Background(lipgloss.Color("238")).
+			Padding(0, 1)
+
+	headerStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("230")).
+			Background(lipgloss.Color("23")).
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("36")).
+			Padding(0, 1)
+
+	contentPanelStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("252")).
+				Background(lipgloss.Color("234")).
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("240")).
+				Padding(0, 1)
+
+	statusPanelStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("250")).
+				Background(lipgloss.Color("235")).
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("58")).
+				Padding(0, 1)
+
+	inputPanelStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("252")).
+			Background(lipgloss.Color("235")).
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("31")).
+			Padding(0, 1)
+
+	emptyPanelStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("244")).
+			Background(lipgloss.Color("236")).
+			Padding(1, 2)
+
+	mutedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+
+	userMessageStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("254")).
+				Background(lipgloss.Color("236")).
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("31")).
+				Padding(0, 1)
+
+	assistantMessageStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("254")).
+				Background(lipgloss.Color("235")).
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(lipgloss.Color("35")).
+				Padding(0, 1)
+
+	modelRowStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("250")).
+			Padding(0, 1)
+
+	selectedRowStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("230")).
+				Background(lipgloss.Color("24")).
+				Padding(0, 1)
+
+	suggestionStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("250")).
+			Background(lipgloss.Color("235")).
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color("66")).
+			Padding(0, 1)
 )
