@@ -53,6 +53,9 @@ type askOptions struct {
 	maxTokens   int
 	stream      bool
 	jsonOut     bool
+	estimate    bool
+	files       []string
+	contextDirs []string
 }
 
 func NewRootCommand(deps Deps) *cobra.Command {
@@ -78,6 +81,8 @@ func NewRootCommand(deps Deps) *cobra.Command {
 
 	root.AddCommand(newSetupCommand(deps))
 	root.AddCommand(newAskCommand(deps))
+	root.AddCommand(newChatCommand(deps))
+	root.AddCommand(newSessionsCommand(deps))
 	root.AddCommand(newModelsCommand(deps))
 	root.AddCommand(newConfigCommand(deps))
 	root.AddCommand(newUpdateCommand(deps))
@@ -125,6 +130,10 @@ func newAskCommand(deps Deps) *cobra.Command {
 			if model == "" {
 				return fmt.Errorf("missing model: pass --model or run `aether setup`")
 			}
+			resolvedPrompt, err = addPromptContext(resolvedPrompt, opts.files, opts.contextDirs)
+			if err != nil {
+				return err
+			}
 
 			req := api.ChatRequest{
 				Model:  model,
@@ -136,6 +145,9 @@ func newAskCommand(deps Deps) *cobra.Command {
 			if cmd.Flags().Changed("max-tokens") {
 				req.MaxTokens = &opts.maxTokens
 			}
+			if opts.estimate {
+				return runEstimate(cmd.Context(), deps, cfg, apiKey, req)
+			}
 			return runAsk(cmd.Context(), deps, cfg, apiKey, req, opts)
 		},
 	}
@@ -144,6 +156,9 @@ func newAskCommand(deps Deps) *cobra.Command {
 	cmd.Flags().IntVar(&opts.maxTokens, "max-tokens", 0, "maximum output tokens")
 	cmd.Flags().BoolVar(&opts.stream, "stream", false, "stream response deltas")
 	cmd.Flags().BoolVar(&opts.jsonOut, "json", false, "print JSON output")
+	cmd.Flags().BoolVar(&opts.estimate, "estimate", false, "print token and cost estimate without sending a chat request")
+	cmd.Flags().StringArrayVarP(&opts.files, "file", "f", nil, "include a file as prompt context")
+	cmd.Flags().StringArrayVar(&opts.contextDirs, "context", nil, "include a directory as prompt context")
 	return cmd
 }
 

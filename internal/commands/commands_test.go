@@ -48,6 +48,7 @@ func (errSecretNotFoundForTest) Is(target error) bool {
 type fakeAPIClient struct {
 	chatRequest  api.ChatRequest
 	chatContent  string
+	chatCalls    int
 	streamDeltas []string
 	models       []api.Model
 	beforeChat   func()
@@ -97,6 +98,7 @@ func (f *fakeAPIClient) Chat(ctx context.Context, req api.ChatRequest) (api.Chat
 	if f.beforeChat != nil {
 		f.beforeChat()
 	}
+	f.chatCalls++
 	f.chatRequest = req
 	return api.ChatResponse{Model: req.Model, Content: f.chatContent}, nil
 }
@@ -174,6 +176,109 @@ func TestAskUsesExplicitModelAndJSONOutput(t *testing.T) {
 	}
 	if strings.Contains(errOut.String(), "Thinking") {
 		t.Fatalf("stderr = %q, want no thinking indicator for JSON output", errOut.String())
+	}
+}
+
+func TestAskIncludesExplicitFileContext(t *testing.T) {
+	configPath := writeConfig(t, `{"base_url":"https://api.aetherapi.dev/v1","default_model":"gpt-4o"}`)
+	filePath := filepath.Join(t.TempDir(), "notes.md")
+	if err := os.WriteFile(filePath, []byte("important implementation detail\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeClient := &fakeAPIClient{chatContent: "answer"}
+
+	cmd := NewRootCommand(Deps{
+		ConfigPath: configPath,
+		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
+		In:         strings.NewReader(""),
+		Out:        &bytes.Buffer{},
+		Err:        &bytes.Buffer{},
+		ClientFactory: func(baseURL, apiKey string) APIClient {
+			return fakeClient
+		},
+	})
+	cmd.SetArgs([]string{"ask", "summarize this", "--file", filePath})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !strings.Contains(fakeClient.chatRequest.Prompt, "summarize this") {
+		t.Fatalf("prompt = %q, want user prompt", fakeClient.chatRequest.Prompt)
+	}
+	if !strings.Contains(fakeClient.chatRequest.Prompt, "<file path=") || !strings.Contains(fakeClient.chatRequest.Prompt, "important implementation detail") {
+		t.Fatalf("prompt = %q, want file context", fakeClient.chatRequest.Prompt)
+	}
+}
+
+func TestAskIncludesDirectoryContextAndRespectsGitignore(t *testing.T) {
+	configPath := writeConfig(t, `{"base_url":"https://api.aetherapi.dev/v1","default_model":"gpt-4o"}`)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("ignored.txt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "included.txt"), []byte("visible context\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ignored.txt"), []byte("hidden context\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeClient := &fakeAPIClient{chatContent: "answer"}
+
+	cmd := NewRootCommand(Deps{
+		ConfigPath: configPath,
+		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
+		In:         strings.NewReader(""),
+		Out:        &bytes.Buffer{},
+		Err:        &bytes.Buffer{},
+		ClientFactory: func(baseURL, apiKey string) APIClient {
+			return fakeClient
+		},
+	})
+	cmd.SetArgs([]string{"ask", "review context", "--context", dir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !strings.Contains(fakeClient.chatRequest.Prompt, "visible context") {
+		t.Fatalf("prompt = %q, want included context", fakeClient.chatRequest.Prompt)
+	}
+	if strings.Contains(fakeClient.chatRequest.Prompt, "hidden context") {
+		t.Fatalf("prompt = %q, want ignored file omitted", fakeClient.chatRequest.Prompt)
+	}
+}
+
+func TestAskEstimatePrintsTokenAndPricePreviewWithoutChatRequest(t *testing.T) {
+	configPath := writeConfig(t, `{"base_url":"https://api.aetherapi.dev/v1","default_model":"gpt-4o"}`)
+	fakeClient := &fakeAPIClient{models: []api.Model{
+		{
+			ID:       "gpt-4o",
+			Endpoint: "/v1/chat/completions",
+			OurPrice: "$2.50 / 1M input tokens, $10.00 / 1M output tokens",
+		},
+	}}
+	var out bytes.Buffer
+
+	cmd := NewRootCommand(Deps{
+		ConfigPath: configPath,
+		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
+		In:         strings.NewReader(""),
+		Out:        &out,
+		Err:        &bytes.Buffer{},
+		ClientFactory: func(baseURL, apiKey string) APIClient {
+			return fakeClient
+		},
+	})
+	cmd.SetArgs([]string{"ask", "hello pricing", "--estimate", "--max-tokens", "1000"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if fakeClient.chatCalls != 0 {
+		t.Fatalf("chat calls = %d, want estimate to avoid chat request", fakeClient.chatCalls)
+	}
+	got := out.String()
+	if !strings.Contains(got, "Model: gpt-4o") || !strings.Contains(got, "Estimated input tokens:") || !strings.Contains(got, "Estimated cost:") {
+		t.Fatalf("stdout = %q, want token and price estimate", got)
 	}
 }
 
@@ -304,6 +409,103 @@ func TestRootNoArgsRunsSetupAndAsksPrompt(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "interactive answer") {
 		t.Fatalf("stdout = %q, want answer", out.String())
+	}
+}
+
+func TestChatCreatesSessionAndSessionsListShowsIt(t *testing.T) {
+	configPath := writeConfig(t, `{"base_url":"https://api.aetherapi.dev/v1","default_model":"gpt-4o"}`)
+	fakeClient := &fakeAPIClient{chatContent: "first answer"}
+	var out bytes.Buffer
+
+	cmd := NewRootCommand(Deps{
+		ConfigPath: configPath,
+		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
+		In:         strings.NewReader(""),
+		Out:        &out,
+		Err:        &bytes.Buffer{},
+		ClientFactory: func(baseURL, apiKey string) APIClient {
+			return fakeClient
+		},
+		Now: func() time.Time {
+			return time.Date(2026, 6, 12, 10, 30, 0, 0, time.UTC)
+		},
+	})
+	cmd.SetArgs([]string{"chat", "first question"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if !strings.Contains(out.String(), "first answer") {
+		t.Fatalf("stdout = %q, want assistant answer", out.String())
+	}
+
+	out.Reset()
+	cmd = NewRootCommand(Deps{
+		ConfigPath: configPath,
+		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
+		In:         strings.NewReader(""),
+		Out:        &out,
+		Err:        &bytes.Buffer{},
+		ClientFactory: func(baseURL, apiKey string) APIClient {
+			return fakeClient
+		},
+	})
+	cmd.SetArgs([]string{"sessions", "list"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("sessions list returned error: %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "20260612-103000") || !strings.Contains(got, "first question") {
+		t.Fatalf("stdout = %q, want created session", got)
+	}
+}
+
+func TestChatResumeIncludesPreviousTurns(t *testing.T) {
+	configPath := writeConfig(t, `{"base_url":"https://api.aetherapi.dev/v1","default_model":"gpt-4o"}`)
+	fakeClient := &fakeAPIClient{chatContent: "first answer"}
+
+	cmd := NewRootCommand(Deps{
+		ConfigPath: configPath,
+		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
+		In:         strings.NewReader(""),
+		Out:        &bytes.Buffer{},
+		Err:        &bytes.Buffer{},
+		ClientFactory: func(baseURL, apiKey string) APIClient {
+			return fakeClient
+		},
+		Now: func() time.Time {
+			return time.Date(2026, 6, 12, 10, 30, 0, 0, time.UTC)
+		},
+	})
+	cmd.SetArgs([]string{"chat", "first question"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("first chat returned error: %v", err)
+	}
+
+	fakeClient.chatContent = "second answer"
+	cmd = NewRootCommand(Deps{
+		ConfigPath: configPath,
+		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
+		In:         strings.NewReader(""),
+		Out:        &bytes.Buffer{},
+		Err:        &bytes.Buffer{},
+		ClientFactory: func(baseURL, apiKey string) APIClient {
+			return fakeClient
+		},
+		Now: func() time.Time {
+			return time.Date(2026, 6, 12, 10, 31, 0, 0, time.UTC)
+		},
+	})
+	cmd.SetArgs([]string{"chat", "--resume", "second question"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("resumed chat returned error: %v", err)
+	}
+
+	prompt := fakeClient.chatRequest.Prompt
+	for _, want := range []string{"User: first question", "Assistant: first answer", "User: second question"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt = %q, want %q", prompt, want)
+		}
 	}
 }
 

@@ -65,10 +65,29 @@ Pipe a longer prompt:
 cat prompt.txt | aether ask --model gpt-4o
 ```
 
+Add project context from files or directories:
+
+```sh
+aether ask "Review this implementation" --file internal/api/api.go
+aether ask "Find risks in this project" --context .
+```
+
+Directory context skips common build folders and honors simple `.gitignore`
+patterns.
+
 Start interactive mode:
 
 ```sh
 aether
+```
+
+Start or resume a saved chat session:
+
+```sh
+aether chat "Help me debug this failing test"
+aether chat --resume "Continue with a smaller fix"
+aether sessions list
+aether sessions show 20260612-103000
 ```
 
 Stream output live:
@@ -81,6 +100,12 @@ Print JSON:
 
 ```sh
 aether ask "Summarize this in one sentence" --json
+```
+
+Preview estimated tokens and cost before sending a request:
+
+```sh
+aether ask "Explain this diff" --estimate --max-tokens 1000
 ```
 
 List text/chat models:
