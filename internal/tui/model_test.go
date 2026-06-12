@@ -44,6 +44,7 @@ func TestParseSlashCommandRecognizesV1Commands(t *testing.T) {
 		"/resume abc123": {name: "resume", arg: "abc123"},
 		"/new":           {name: "new"},
 		"/clear":         {name: "clear"},
+		"/usage":         {name: "usage"},
 		"/help":          {name: "help"},
 		"/quit":          {name: "quit"},
 	}
@@ -289,12 +290,43 @@ func TestSessionCommandsLoadResumeNewClearHelpAndQuitState(t *testing.T) {
 	}
 }
 
+func TestUsageCommandShowsCurrentSessionUsageAndDoesNotBlockInput(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	item, err := model.store.New("gpt-4o", "usage chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.store.Append(&item, "user", "hello usage")
+	model.store.Append(&item, "assistant", "usage answer")
+	if err := model.store.Save(item); err != nil {
+		t.Fatal(err)
+	}
+	model.loadSession(item)
+
+	model.showUsage()
+	if !model.usageVisible {
+		t.Fatalf("usage visible = false, want usage overlay")
+	}
+	rendered := model.renderUsage()
+	for _, want := range []string{"Session usage", item.ID, "Messages: 2", "Estimated tokens:"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("usage = %q, want %q", rendered, want)
+		}
+	}
+
+	updated, _ := model.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	model = updated.(*Model)
+	if model.usageVisible || model.input.Value() != "n" {
+		t.Fatalf("usage visible=%v input=%q, want usage dismissed and input accepted", model.usageVisible, model.input.Value())
+	}
+}
+
 func TestSlashInputShowsFilteredCommandSuggestions(t *testing.T) {
 	model := newTestModel(t, &fakeClient{})
 
 	model.input.SetValue("/")
 	rendered := model.View()
-	for _, want := range []string{"/models", "/model <id>", "/help"} {
+	for _, want := range []string{"/models", "/model <id>", "/usage", "/help"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("view = %q, want slash suggestion %q", rendered, want)
 		}
@@ -313,6 +345,24 @@ func TestSlashInputShowsFilteredCommandSuggestions(t *testing.T) {
 	model = updated.(*Model)
 	if model.input.Value() != "/model " {
 		t.Fatalf("input = %q, want selected slash suggestion completed", model.input.Value())
+	}
+}
+
+func TestSlashSuggestionArrowKeysWrapAround(t *testing.T) {
+	model := newTestModel(t, &fakeClient{})
+	model.input.SetValue("/")
+
+	updated, _ := model.updateKey(tea.KeyMsg{Type: tea.KeyUp})
+	model = updated.(*Model)
+	suggestions := model.currentSlashSuggestions()
+	if model.slashCursor != len(suggestions)-1 {
+		t.Fatalf("slash cursor = %d, want up from first suggestion to wrap to last", model.slashCursor)
+	}
+
+	updated, _ = model.updateKey(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(*Model)
+	if model.slashCursor != 0 {
+		t.Fatalf("slash cursor = %d, want down from last suggestion to wrap to first", model.slashCursor)
 	}
 }
 

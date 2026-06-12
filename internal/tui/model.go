@@ -70,6 +70,7 @@ type Model struct {
 	mode          mode
 	status        string
 	helpVisible   bool
+	usageVisible  bool
 	slashCursor   int
 	input         textinput.Model
 	viewport      viewport.Model
@@ -218,6 +219,7 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.input.SetValue("")
 		m.helpVisible = false
+		m.usageVisible = false
 		return m, nil
 	}
 
@@ -264,14 +266,16 @@ func (m *Model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.beginStream(value)
 	case "ctrl+n":
 		m.helpVisible = false
+		m.usageVisible = false
 		m.input.SetValue(m.input.Value() + "\n")
 		m.input.CursorEnd()
 		return m, nil
 	}
 
 	var cmd tea.Cmd
-	if m.helpVisible {
+	if m.helpVisible || m.usageVisible {
 		m.helpVisible = false
+		m.usageVisible = false
 	}
 	m.input, cmd = m.input.Update(msg)
 	m.clampSlashCursor()
@@ -339,6 +343,8 @@ func (m *Model) View() string {
 		body = m.renderSessions()
 	} else if m.helpVisible {
 		body = m.renderHelp()
+	} else if m.usageVisible {
+		body = m.renderUsage()
 	}
 	if suggestions := m.renderSlashSuggestions(); suggestions != "" {
 		body = lipgloss.JoinVertical(lipgloss.Left, body, suggestions)
@@ -385,6 +391,8 @@ func (m *Model) handleSlashCommand(input string) tea.Cmd {
 		}
 	case "clear":
 		m.clearVisible()
+	case "usage":
+		m.showUsage()
 	case "help":
 		m.showHelp()
 	case "quit":
@@ -510,7 +518,15 @@ func (m *Model) clearVisible() {
 func (m *Model) showHelp() {
 	m.mode = modeChat
 	m.helpVisible = true
-	m.status = "/models /model <id> /sessions /resume <id> /new /clear /help /quit"
+	m.usageVisible = false
+	m.status = "/models /model <id> /sessions /resume <id> /new /clear /usage /help /quit"
+}
+
+func (m *Model) showUsage() {
+	m.mode = modeChat
+	m.helpVisible = false
+	m.usageVisible = true
+	m.status = "Session usage."
 }
 
 func (m *Model) requestQuit() {
@@ -736,11 +752,73 @@ func (m *Model) renderHelp() string {
 		"/resume <id>   load a saved session",
 		"/new           start a new session",
 		"/clear         clear visible messages",
+		"/usage         show estimated usage for this session",
 		"/help          show this help",
 		"/quit          exit",
 		"",
 		"Enter sends. Ctrl+N inserts a newline. Esc closes overlays.",
 	}, "\n")
+}
+
+func (m *Model) renderUsage() string {
+	usage := m.sessionUsage()
+	return strings.Join([]string{
+		"Session usage",
+		"Session: " + usage.sessionID,
+		"Model: " + usage.model,
+		fmt.Sprintf("Messages: %d", usage.messages),
+		fmt.Sprintf("User messages: %d", usage.userMessages),
+		fmt.Sprintf("Assistant messages: %d", usage.assistantMessages),
+		fmt.Sprintf("Estimated user tokens: %d", usage.userTokens),
+		fmt.Sprintf("Estimated assistant tokens: %d", usage.assistantTokens),
+		fmt.Sprintf("Estimated tokens: %d", usage.totalTokens),
+		"",
+		"Estimates use the local 4 characters per token heuristic.",
+	}, "\n")
+}
+
+type sessionUsage struct {
+	sessionID         string
+	model             string
+	messages          int
+	userMessages      int
+	assistantMessages int
+	userTokens        int
+	assistantTokens   int
+	totalTokens       int
+}
+
+func (m *Model) sessionUsage() sessionUsage {
+	messages := m.current.Messages
+	if len(messages) == 0 {
+		messages = m.messages
+	}
+	usage := sessionUsage{
+		sessionID: m.displaySessionID(),
+		model:     m.activeModel,
+		messages:  len(messages),
+	}
+	for _, message := range messages {
+		tokens := estimateUsageTokens(message.Content)
+		switch message.Role {
+		case "user":
+			usage.userMessages++
+			usage.userTokens += tokens
+		case "assistant":
+			usage.assistantMessages++
+			usage.assistantTokens += tokens
+		}
+		usage.totalTokens += tokens
+	}
+	return usage
+}
+
+func estimateUsageTokens(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	return (len(text) + 3) / 4
 }
 
 func (m *Model) renderSlashSuggestions() string {
@@ -782,6 +860,7 @@ var slashSuggestions = []slashSuggestion{
 	{usage: "/resume <id>", name: "resume", description: "load a saved session"},
 	{usage: "/new", name: "new", description: "start a new session"},
 	{usage: "/clear", name: "clear", description: "clear visible messages"},
+	{usage: "/usage", name: "usage", description: "show estimated usage for this session"},
 	{usage: "/help", name: "help", description: "show command help"},
 	{usage: "/quit", name: "quit", description: "exit the TUI"},
 }
@@ -815,12 +894,9 @@ func (m *Model) moveSlashCursor(delta int) {
 		m.slashCursor = 0
 		return
 	}
-	m.slashCursor += delta
+	m.slashCursor = (m.slashCursor + delta) % len(suggestions)
 	if m.slashCursor < 0 {
-		m.slashCursor = 0
-	}
-	if m.slashCursor >= len(suggestions) {
-		m.slashCursor = len(suggestions) - 1
+		m.slashCursor += len(suggestions)
 	}
 }
 
