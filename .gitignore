@@ -6,5 +6,5 @@
 /.context/
 /bin/
 /dist/
-/aether
+/aethercli
 /coverage.out

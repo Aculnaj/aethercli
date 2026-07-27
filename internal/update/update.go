@@ -76,7 +76,7 @@ func (c GitHubChecker) Latest(ctx context.Context) (Release, error) {
 		return Release{}, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "aether-cli")
+	req.Header.Set("User-Agent", "aethercli")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -149,7 +149,7 @@ func (i BinaryInstaller) Install(ctx context.Context, options InstallOptions) (I
 	if err != nil {
 		return InstallResult{}, err
 	}
-	req.Header.Set("User-Agent", "aether-cli")
+	req.Header.Set("User-Agent", "aethercli")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -263,13 +263,13 @@ func assetNames(goos, goarch string) (string, string, error) {
 		return "", "", fmt.Errorf("unsupported CPU architecture: %s", goarch)
 	}
 
-	binaryName := "aether"
+	binaryName := "aethercli"
 	format := "tar.gz"
 	if goos == "windows" {
-		binaryName = "aether.exe"
+		binaryName = "aethercli.exe"
 		format = "zip"
 	}
-	return fmt.Sprintf("aether_%s_%s.%s", goos, goarch, format), binaryName, nil
+	return fmt.Sprintf("aethercli_%s_%s.%s", goos, goarch, format), binaryName, nil
 }
 
 func extractBinary(data []byte, assetName, binaryName string) ([]byte, error) {
@@ -339,7 +339,7 @@ func writeExecutable(targetPath string, data []byte) error {
 		return err
 	}
 
-	tmpFile, err := os.CreateTemp(filepath.Dir(targetPath), ".aether-update-*")
+	tmpFile, err := os.CreateTemp(filepath.Dir(targetPath), ".aethercli-update-*")
 	if err != nil {
 		return err
 	}

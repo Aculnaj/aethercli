@@ -162,7 +162,7 @@ func TestAPIErrorMapsKnownCodes(t *testing.T) {
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("Chat error = %T, want *APIError", err)
 	}
-	if !strings.Contains(apiErr.UserMessage(), "invalid API key") {
-		t.Fatalf("UserMessage = %q, want invalid API key guidance", apiErr.UserMessage())
+	if !strings.Contains(apiErr.UserMessage(), "aethercli setup") {
+		t.Fatalf("UserMessage = %q, want aethercli setup guidance", apiErr.UserMessage())
 	}
 }

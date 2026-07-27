@@ -43,7 +43,7 @@ case "$(uname -m)" in
     ;;
 esac
 
-asset="aether_${os}_${arch}.tar.gz"
+asset="aethercli_${os}_${arch}.tar.gz"
 if [ "$version" = "latest" ]; then
   url="https://github.com/${repo}/releases/latest/download/${asset}"
 else
@@ -58,16 +58,16 @@ curl -fsSL "$url" -o "$tmp_dir/$asset"
 tar -xzf "$tmp_dir/$asset" -C "$tmp_dir"
 
 mkdir -p "$install_dir"
-install -m 755 "$tmp_dir/aether" "$install_dir/aether"
+install -m 755 "$tmp_dir/aethercli" "$install_dir/aethercli"
 
 echo "" >&2
 echo "Aether CLI installed successfully." >&2
-echo "Binary: ${install_dir}/aether" >&2
+echo "Binary: ${install_dir}/aethercli" >&2
 case ":$PATH:" in
   *":$install_dir:"*)
-    echo "Run: aether setup" >&2
+    echo "Run: aethercli setup" >&2
     ;;
   *)
-    echo "Add ${install_dir} to PATH, then run: aether setup" >&2
+    echo "Add ${install_dir} to PATH, then run: aethercli setup" >&2
     ;;
 esac
