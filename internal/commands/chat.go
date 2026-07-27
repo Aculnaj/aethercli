@@ -55,7 +55,7 @@ func newChatCommand(deps Deps) *cobra.Command {
 				model = strings.TrimSpace(cfg.DefaultModel)
 			}
 			if model == "" {
-				return fmt.Errorf("missing model: pass --model or run `aether setup`")
+				return fmt.Errorf("missing model: pass --model or run `aethercli setup`")
 			}
 			return runChat(cmd.Context(), deps, cfg, apiKey, model, resolvedPrompt, opts)
 		},

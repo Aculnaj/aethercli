@@ -37,6 +37,29 @@ func TestIsNewerVersionComparesReleaseTags(t *testing.T) {
 	}
 }
 
+func TestAssetNamesUseAetherCLICommandName(t *testing.T) {
+	tests := []struct {
+		goos       string
+		wantAsset  string
+		wantBinary string
+	}{
+		{goos: "linux", wantAsset: "aethercli_linux_amd64.tar.gz", wantBinary: "aethercli"},
+		{goos: "windows", wantAsset: "aethercli_windows_amd64.zip", wantBinary: "aethercli.exe"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.goos, func(t *testing.T) {
+			asset, binary, err := assetNames(tt.goos, "amd64")
+			if err != nil {
+				t.Fatalf("assetNames returned error: %v", err)
+			}
+			if asset != tt.wantAsset || binary != tt.wantBinary {
+				t.Fatalf("assetNames = (%q, %q), want (%q, %q)", asset, binary, tt.wantAsset, tt.wantBinary)
+			}
+		})
+	}
+}
+
 func TestGitHubCheckerLatestRelease(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/Aculnaj/aethercli/releases/latest" {
@@ -66,9 +89,9 @@ func TestGitHubCheckerLatestRelease(t *testing.T) {
 }
 
 func TestBinaryInstallerDownloadsAndInstallsArchiveAsset(t *testing.T) {
-	archive := tarGzWithFile(t, "aether", []byte("#!/bin/sh\necho updated\n"))
+	archive := tarGzWithFile(t, "aethercli", []byte("#!/bin/sh\necho updated\n"))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/Aculnaj/aethercli/releases/download/v1.2.4/aether_darwin_arm64.tar.gz" {
+		if r.URL.Path != "/Aculnaj/aethercli/releases/download/v1.2.4/aethercli_darwin_arm64.tar.gz" {
 			t.Fatalf("path = %q, want release asset path", r.URL.Path)
 		}
 		_, _ = w.Write(archive)
@@ -91,7 +114,7 @@ func TestBinaryInstallerDownloadsAndInstallsArchiveAsset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Install returned error: %v", err)
 	}
-	if result.Path != filepath.Join(installDir, "aether") {
+	if result.Path != filepath.Join(installDir, "aethercli") {
 		t.Fatalf("Path = %q, want installed binary path", result.Path)
 	}
 	data, err := os.ReadFile(result.Path)

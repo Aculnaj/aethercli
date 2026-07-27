@@ -1,15 +1,15 @@
 version: 2
 
-project_name: aether
+project_name: aethercli
 
 before:
   hooks:
     - go mod tidy
 
 builds:
-  - id: aether
-    main: ./cmd/aether
-    binary: aether
+  - id: aethercli
+    main: ./cmd/aethercli
+    binary: aethercli
     env:
       - CGO_ENABLED=0
     goos:
@@ -25,7 +25,7 @@ builds:
 archives:
   - id: default
     ids:
-      - aether
+      - aethercli
     formats:
       - tar.gz
     format_overrides:

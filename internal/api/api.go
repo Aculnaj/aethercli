@@ -177,11 +177,11 @@ func (e *APIError) Error() string {
 func (e *APIError) UserMessage() string {
 	switch {
 	case e.Code == "invalid_api_key" || e.StatusCode == http.StatusUnauthorized:
-		return "invalid API key: run `aether setup` or set AETHER_API_KEY with a valid AetherAPI key"
+		return "invalid API key: run `aethercli setup` or set AETHER_API_KEY with a valid AetherAPI key"
 	case e.Code == "insufficient_credits":
 		return "insufficient credits: top up your AetherAPI account in the dashboard"
 	case e.Code == "model_not_found":
-		return "model not found: run `aether models` and choose a chat model"
+		return "model not found: run `aethercli models` and choose a chat model"
 	case e.Code == "rate_limit_exceeded" || e.StatusCode == http.StatusTooManyRequests:
 		return "rate limit exceeded: wait and retry the request"
 	default:

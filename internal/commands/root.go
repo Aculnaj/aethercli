@@ -80,7 +80,7 @@ func NewRootCommand(deps Deps) *cobra.Command {
 	deps = normalizeDeps(deps)
 
 	root := &cobra.Command{
-		Use:           "aether",
+		Use:           "aethercli",
 		Short:         "AetherAPI command-line client",
 		Version:       deps.CurrentVersion,
 		SilenceUsage:  true,
@@ -147,7 +147,7 @@ func newAskCommand(deps Deps) *cobra.Command {
 				model = strings.TrimSpace(cfg.DefaultModel)
 			}
 			if model == "" {
-				return fmt.Errorf("missing model: pass --model or run `aether setup`")
+				return fmt.Errorf("missing model: pass --model or run `aethercli setup`")
 			}
 			resolvedPrompt, err = addPromptContext(resolvedPrompt, opts.files, opts.contextDirs)
 			if err != nil {
@@ -332,11 +332,11 @@ func newUpdateCommand(deps Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(deps.Out, "Updated aether to %s\nBinary: %s\n", release.Version, result.Path)
+			_, err = fmt.Fprintf(deps.Out, "Updated aethercli to %s\nBinary: %s\n", release.Version, result.Path)
 			return err
 		},
 	}
-	cmd.Flags().StringVar(&installDir, "install-dir", "", "directory where the aether binary should be installed")
+	cmd.Flags().StringVar(&installDir, "install-dir", "", "directory where the aethercli binary should be installed")
 	return cmd
 }
 
@@ -365,7 +365,7 @@ func runTUI(ctx context.Context, deps Deps, cfg config.Config, apiKey string, op
 		model = strings.TrimSpace(cfg.DefaultModel)
 	}
 	if model == "" {
-		return fmt.Errorf("missing model: pass --model or run `aether setup`")
+		return fmt.Errorf("missing model: pass --model or run `aethercli setup`")
 	}
 	return deps.TUIRunner(ctx, TUIOptions{
 		ConfigPath:    deps.ConfigPath,
@@ -543,7 +543,7 @@ func runAutoUpdateCheck(ctx context.Context, deps Deps, cmd *cobra.Command) erro
 	_ = config.Save(deps.ConfigPath, cfg)
 
 	if update.IsNewerVersion(deps.CurrentVersion, release.Version) {
-		_, _ = fmt.Fprintf(deps.Err, "Update available: aether %s -> %s\nRun `aether update` to install it.\n", deps.CurrentVersion, release.Version)
+		_, _ = fmt.Fprintf(deps.Err, "Update available: aethercli %s -> %s\nRun `aethercli update` to install it.\n", deps.CurrentVersion, release.Version)
 	}
 	return nil
 }

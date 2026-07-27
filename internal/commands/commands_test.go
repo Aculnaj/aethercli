@@ -92,7 +92,7 @@ func (b *lockedBuffer) String() string {
 func (f *fakeUpdateInstaller) Install(ctx context.Context, options update.InstallOptions) (update.InstallResult, error) {
 	f.calls++
 	f.options = options
-	return update.InstallResult{Path: "/tmp/aether"}, nil
+	return update.InstallResult{Path: "/tmp/aethercli"}, nil
 }
 
 func (f *fakeAPIClient) Chat(ctx context.Context, req api.ChatRequest) (api.ChatResponse, error) {
@@ -132,6 +132,13 @@ func (f *fakeAPIClient) StreamChat(ctx context.Context, req api.ChatRequest, onD
 func (f *fakeAPIClient) Models(ctx context.Context) ([]api.Model, error) {
 	f.modelCalls++
 	return f.models, nil
+}
+
+func TestRootCommandUsesAetherCLIName(t *testing.T) {
+	cmd := NewRootCommand(Deps{})
+	if cmd.Use != "aethercli" {
+		t.Fatalf("Use = %q, want aethercli", cmd.Use)
+	}
 }
 
 func TestAskUsesExplicitModelAndJSONOutput(t *testing.T) {
@@ -692,7 +699,7 @@ func TestAutoUpdateCheckPrintsHintWhenReleaseIsNewer(t *testing.T) {
 	if checker.calls != 1 {
 		t.Fatalf("update checks = %d, want 1", checker.calls)
 	}
-	if got := errOut.String(); !strings.Contains(got, "Update available: aether v1.2.3 -> v1.2.4") || !strings.Contains(got, "aether update") {
+	if got := errOut.String(); !strings.Contains(got, "Update available: aethercli v1.2.3 -> v1.2.4") || !strings.Contains(got, "aethercli update") {
 		t.Fatalf("stderr = %q, want update hint", got)
 	}
 }
@@ -760,7 +767,7 @@ func TestUpdateCommandInstallsLatestRelease(t *testing.T) {
 	if installer.options.InstallDir != "/opt/aether/bin" {
 		t.Fatalf("install dir = %q, want default install dir", installer.options.InstallDir)
 	}
-	if got := out.String(); !strings.Contains(got, "Updated aether to v1.2.4") {
+	if got := out.String(); !strings.Contains(got, "Updated aethercli to v1.2.4") {
 		t.Fatalf("stdout = %q, want update success", got)
 	}
 }

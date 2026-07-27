@@ -1,6 +1,6 @@
 # Aether CLI
 
-`aether` is a small Go CLI for AetherAPI text models. It stores your AetherAPI key once, lets you choose a default model, and then sends prompts from your terminal.
+`aethercli` is a small Go CLI for AetherAPI text models. It stores your AetherAPI key once, lets you choose a default model, and then sends prompts from your terminal.
 
 ## Install
 
@@ -10,7 +10,7 @@ From GitHub Releases:
 curl -fsSL https://raw.githubusercontent.com/Aculnaj/aethercli/main/install.sh | sh
 ```
 
-The installer places `aether` in `~/.local/bin` by default. Override with:
+The installer places `aethercli` in `~/.local/bin` by default. Override with:
 
 ```sh
 AETHER_INSTALL_DIR=/usr/local/bin sh install.sh
@@ -19,7 +19,7 @@ AETHER_INSTALL_DIR=/usr/local/bin sh install.sh
 From source:
 
 ```sh
-go install github.com/Aculnaj/aethercli/cmd/aether@latest
+go install github.com/Aculnaj/aethercli/cmd/aethercli@latest
 ```
 
 ## First Run
@@ -27,7 +27,7 @@ go install github.com/Aculnaj/aethercli/cmd/aether@latest
 Run setup once:
 
 ```sh
-aether setup
+aethercli setup
 ```
 
 The CLI asks for:
@@ -50,26 +50,26 @@ export AETHER_API_KEY=sk-aetherapi-...
 Ask with an explicit model:
 
 ```sh
-aether ask "Write a short haiku about terminals" --model claude-sonnet-4-6
+aethercli ask "Write a short haiku about terminals" --model claude-sonnet-4-6
 ```
 
 Ask with your saved default model:
 
 ```sh
-aether ask "Explain DNS in one paragraph"
+aethercli ask "Explain DNS in one paragraph"
 ```
 
 Pipe a longer prompt:
 
 ```sh
-cat prompt.txt | aether ask --model gpt-4o
+cat prompt.txt | aethercli ask --model gpt-4o
 ```
 
 Add project context from files or directories:
 
 ```sh
-aether ask "Review this implementation" --file internal/api/api.go
-aether ask "Find risks in this project" --context .
+aethercli ask "Review this implementation" --file internal/api/api.go
+aethercli ask "Find risks in this project" --context .
 ```
 
 Directory context skips common build folders and honors simple `.gitignore`
@@ -78,14 +78,14 @@ patterns.
 Start interactive mode:
 
 ```sh
-aether
+aethercli
 ```
 
 Start the Bubble Tea chat TUI:
 
 ```sh
-aether chat
-aether tui
+aethercli chat
+aethercli tui
 ```
 
 Inside the TUI, type `/help` for commands such as `/models`, `/sessions`,
@@ -94,41 +94,41 @@ Inside the TUI, type `/help` for commands such as `/models`, `/sessions`,
 Send or resume a saved chat session without opening the TUI:
 
 ```sh
-aether chat "Help me debug this failing test"
-aether chat --resume "Continue with a smaller fix"
-aether sessions list
-aether sessions show 20260612-103000
+aethercli chat "Help me debug this failing test"
+aethercli chat --resume "Continue with a smaller fix"
+aethercli sessions list
+aethercli sessions show 20260612-103000
 ```
 
 Stream output live:
 
 ```sh
-aether ask "Draft a release note" --stream
+aethercli ask "Draft a release note" --stream
 ```
 
 Print JSON:
 
 ```sh
-aether ask "Summarize this in one sentence" --json
+aethercli ask "Summarize this in one sentence" --json
 ```
 
 Preview estimated tokens and cost before sending a request:
 
 ```sh
-aether ask "Explain this diff" --estimate --max-tokens 1000
+aethercli ask "Explain this diff" --estimate --max-tokens 1000
 ```
 
 List text/chat models:
 
 ```sh
-aether models
-aether models --json
+aethercli models
+aethercli models --json
 ```
 
 Update the CLI when a new GitHub release is available:
 
 ```sh
-aether update
+aethercli update
 ```
 
 Release builds also check for updates automatically at most once per day and print a hint when a newer version exists.
@@ -136,11 +136,11 @@ Release builds also check for updates automatically at most once per day and pri
 Manage config:
 
 ```sh
-aether config get
-aether config set default-model claude-sonnet-4-6
-aether config get default-model
-aether config clear key
-aether config clear
+aethercli config get
+aethercli config set default-model claude-sonnet-4-6
+aethercli config get default-model
+aethercli config clear key
+aethercli config clear
 ```
 
 ## Development
@@ -154,7 +154,7 @@ go test ./...
 Build locally:
 
 ```sh
-go build ./cmd/aether
+go build ./cmd/aethercli
 ```
 
 Create release artifacts locally if GoReleaser is installed:
