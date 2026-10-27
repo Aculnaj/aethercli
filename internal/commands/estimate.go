@@ -11,9 +11,9 @@ import (
 	"github.com/Aculnaj/aethercli/internal/config"
 )
 
-var priceNumberPattern = regexp.MustCompile(`\$?\s*([0-9]+(?:\.[0-9]+)?)`)
+var priceNumberPattern = regexp.MustCompile(`\$\s*([0-9]+(?:\.[0-9]+)?)`)
 
-func runEstimate(ctx context.Context, deps Deps, cfg config.Config, apiKey string, req api.ChatRequest) error {
+func runEstimate(ctx context.Context, deps Deps, cfg config.Config, apiKey string, req api.ChatRequest, jsonOut bool) error {
 	client := deps.ClientFactory(cfg.BaseURL, apiKey)
 	models, err := client.Models(ctx)
 	if err != nil {
@@ -25,6 +25,16 @@ func runEstimate(ctx context.Context, deps Deps, cfg config.Config, apiKey strin
 	outputTokens := 0
 	if req.MaxTokens != nil && *req.MaxTokens > 0 {
 		outputTokens = *req.MaxTokens
+	}
+
+	if jsonOut {
+		var cost *float64
+		inputPrice, outputPrice, valid := parsePricePerMillion(model.OurPrice)
+		if valid && outputTokens > 0 {
+			value := (float64(inputTokens)*inputPrice + float64(outputTokens)*outputPrice) / 1_000_000
+			cost = &value
+		}
+		return writeJSON(deps.Out, map[string]any{"model": req.Model, "estimated": true, "input_tokens_estimate": inputTokens, "max_output_tokens": outputTokens, "estimated_cost_usd": cost, "catalog_price": model.OurPrice, "assumptions": "UTF-8 bytes/4 heuristic; output assumes max-tokens; no provider call, not a quote or usage record"})
 	}
 
 	if _, err := fmt.Fprintf(deps.Out, "Model: %s\n", req.Model); err != nil {
@@ -55,6 +65,10 @@ func runEstimate(ctx context.Context, deps Deps, cfg config.Config, apiKey strin
 		return err
 	}
 
+	if outputTokens == 0 {
+		_, err := fmt.Fprintln(deps.Out, "Estimated cost: unavailable; set --max-tokens for an assumed output allowance")
+		return err
+	}
 	inputCost := float64(inputTokens) / 1_000_000 * inputPerMillion
 	outputCost := float64(outputTokens) / 1_000_000 * outputPerMillion
 	_, err = fmt.Fprintf(deps.Out, "Estimated cost: $%.6f\n", inputCost+outputCost)
@@ -79,6 +93,9 @@ func estimateTokens(text string) int {
 }
 
 func parsePricePerMillion(raw string) (float64, float64, bool) {
+	if !strings.Contains(raw, "1M") || !strings.Contains(raw, "in") || !strings.Contains(raw, "out") {
+		return 0, 0, false
+	}
 	matches := priceNumberPattern.FindAllStringSubmatch(raw, -1)
 	if len(matches) < 2 {
 		return 0, 0, false

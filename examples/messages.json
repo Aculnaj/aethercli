@@ -1,0 +1,5 @@
+{
+  "model": "MODEL_ID",
+  "messages": [{"role": "user", "content": "Reply with one short sentence."}],
+  "max_tokens": 128
+}

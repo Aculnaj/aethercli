@@ -10,9 +10,9 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"text/tabwriter"
 	"time"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
 	"github.com/Aculnaj/aethercli/internal/api"
@@ -63,6 +63,8 @@ type Deps struct {
 	DefaultInstallDir string
 	Now               func() time.Time
 	TUIRunner         TUIRunner
+	Interactive       func() bool
+	configPath        func() string
 }
 
 type askOptions struct {
@@ -78,6 +80,9 @@ type askOptions struct {
 
 func NewRootCommand(deps Deps) *cobra.Command {
 	deps = normalizeDeps(deps)
+	var jsonOut, nonInteractive bool
+	terminal := deps.Interactive
+	deps.Interactive = func() bool { return !jsonOut && !nonInteractive && terminal() }
 
 	root := &cobra.Command{
 		Use:           "aethercli",
@@ -86,13 +91,20 @@ func NewRootCommand(deps Deps) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateInvocation(cmd, args, deps); err != nil {
+				return err
+			}
 			return runAutoUpdateCheck(cmd.Context(), deps, cmd)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInteractive(cmd.Context(), deps)
 		},
 	}
-	root.SetVersionTemplate("{{.Version}}\n")
+	root.PersistentFlags().BoolVar(&jsonOut, "json", false, "print JSON data and structured errors (streaming uses SSE)")
+	root.PersistentFlags().BoolVar(&nonInteractive, "non-interactive", false, "disable prompts, TUI, spinners and automatic update checks")
+	root.PersistentFlags().StringVar(&deps.ConfigPath, "config", deps.ConfigPath, "path to aethercli config (never contains the API key)")
+	deps.configPath = func() string { return deps.ConfigPath }
+	root.SetVersionTemplate(`{{if eq (.Flag "json").Value.String "true"}}{"version":{{printf "%q" .Version}}}{{else}}{{.Version}}{{end}}` + "\n")
 	root.SetIn(deps.In)
 	root.SetOut(deps.Out)
 	root.SetErr(deps.Err)
@@ -105,6 +117,10 @@ func NewRootCommand(deps Deps) *cobra.Command {
 	root.AddCommand(newModelsCommand(deps))
 	root.AddCommand(newConfigCommand(deps))
 	root.AddCommand(newUpdateCommand(deps))
+	root.AddCommand(newDiagnosticCommand(deps, "status"), newDiagnosticCommand(deps, "doctor"))
+	root.AddCommand(newReportCommand(deps, "usage"), newReportCommand(deps, "budget"))
+	root.AddCommand(newAPICommand(deps), newSandboxCommand(deps))
+	installMachineHelp(root)
 	return root
 }
 
@@ -112,6 +128,7 @@ func newSetupCommand(deps Deps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "setup",
 		Short: "Store your AetherAPI key and default model",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			reader := bufio.NewReader(deps.In)
 			_, _, err := runSetup(deps, reader)
@@ -126,8 +143,9 @@ func newAskCommand(deps Deps) *cobra.Command {
 		Use:   "ask [prompt]",
 		Short: "Send one prompt to an AetherAPI chat model",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.jsonOut = jsonRequested(cmd)
 			reader := bufio.NewReader(deps.In)
-			cfg, apiKey, err := ensureConfigured(deps, reader, true)
+			cfg, apiKey, err := ensureConfigured(deps, reader, strings.TrimSpace(opts.model) == "")
 			if err != nil {
 				return err
 			}
@@ -136,7 +154,7 @@ func newAskCommand(deps Deps) *cobra.Command {
 				Args:         args,
 				Stdin:        deps.In,
 				StdinHasData: deps.StdinHasData(),
-				Ask:          lineAsker(deps.Err, reader),
+				Ask:          promptAsker(deps, reader),
 			})
 			if err != nil {
 				return err
@@ -165,7 +183,7 @@ func newAskCommand(deps Deps) *cobra.Command {
 				req.MaxTokens = &opts.maxTokens
 			}
 			if opts.estimate {
-				return runEstimate(cmd.Context(), deps, cfg, apiKey, req)
+				return runEstimate(cmd.Context(), deps, cfg, apiKey, req, opts.jsonOut)
 			}
 			return runAsk(cmd.Context(), deps, cfg, apiKey, req, opts)
 		},
@@ -174,132 +192,9 @@ func newAskCommand(deps Deps) *cobra.Command {
 	cmd.Flags().Float64Var(&opts.temperature, "temperature", 1, "sampling temperature")
 	cmd.Flags().IntVar(&opts.maxTokens, "max-tokens", 0, "maximum output tokens")
 	cmd.Flags().BoolVar(&opts.stream, "stream", false, "stream response deltas")
-	cmd.Flags().BoolVar(&opts.jsonOut, "json", false, "print JSON output")
 	cmd.Flags().BoolVar(&opts.estimate, "estimate", false, "print token and cost estimate without sending a chat request")
 	cmd.Flags().StringArrayVarP(&opts.files, "file", "f", nil, "include a file as prompt context")
 	cmd.Flags().StringArrayVar(&opts.contextDirs, "context", nil, "include a directory as prompt context")
-	return cmd
-}
-
-func newModelsCommand(deps Deps) *cobra.Command {
-	var jsonOut bool
-	cmd := &cobra.Command{
-		Use:   "models",
-		Short: "List AetherAPI chat models",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(deps.ConfigPath)
-			if err != nil {
-				return err
-			}
-			apiKey, err := secrets.ResolveAPIKey(deps.Secrets)
-			if errors.Is(err, secrets.ErrMissingAPIKey) {
-				apiKey = ""
-			} else if err != nil {
-				return err
-			}
-
-			client := deps.ClientFactory(cfg.BaseURL, apiKey)
-			models, err := client.Models(cmd.Context())
-			if err != nil {
-				return userFacingError(err)
-			}
-			models = api.FilterChatModels(models)
-			if jsonOut {
-				encoder := json.NewEncoder(deps.Out)
-				encoder.SetIndent("", "  ")
-				return encoder.Encode(models)
-			}
-			return printModels(deps.Out, models)
-		},
-	}
-	cmd.Flags().BoolVar(&jsonOut, "json", false, "print models as JSON")
-	return cmd
-}
-
-func newConfigCommand(deps Deps) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "config",
-		Short: "Manage local Aether CLI config",
-	}
-	cmd.AddCommand(&cobra.Command{
-		Use:   "get [default-model|base-url]",
-		Short: "Print config",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(deps.ConfigPath)
-			if err != nil {
-				return err
-			}
-			if len(args) == 0 {
-				encoder := json.NewEncoder(deps.Out)
-				encoder.SetIndent("", "  ")
-				return encoder.Encode(cfg)
-			}
-			switch args[0] {
-			case "default-model":
-				_, err = fmt.Fprintln(deps.Out, cfg.DefaultModel)
-			case "base-url":
-				_, err = fmt.Fprintln(deps.Out, cfg.BaseURL)
-			default:
-				err = fmt.Errorf("unknown config key %q", args[0])
-			}
-			return err
-		},
-	})
-	cmd.AddCommand(&cobra.Command{
-		Use:   "set [default-model|base-url] [value]",
-		Short: "Set config value",
-		Args:  cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(deps.ConfigPath)
-			if err != nil {
-				return err
-			}
-			switch args[0] {
-			case "default-model":
-				cfg.DefaultModel = strings.TrimSpace(args[1])
-				if cfg.DefaultModel == "" {
-					return fmt.Errorf("default model cannot be empty")
-				}
-			case "base-url":
-				cfg.BaseURL = strings.TrimRight(strings.TrimSpace(args[1]), "/")
-				if cfg.BaseURL == "" {
-					return fmt.Errorf("base URL cannot be empty")
-				}
-			default:
-				return fmt.Errorf("unknown config key %q", args[0])
-			}
-			return config.Save(deps.ConfigPath, cfg)
-		},
-	})
-	cmd.AddCommand(&cobra.Command{
-		Use:   "clear [key|default-model|base-url]",
-		Short: "Clear stored key or config",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				if err := config.Delete(deps.ConfigPath); err != nil {
-					return err
-				}
-				return deps.Secrets.Delete()
-			}
-			cfg, err := config.Load(deps.ConfigPath)
-			if err != nil {
-				return err
-			}
-			switch args[0] {
-			case "key":
-				return deps.Secrets.Delete()
-			case "default-model":
-				cfg.DefaultModel = ""
-			case "base-url":
-				cfg.BaseURL = config.DefaultBaseURL
-			default:
-				return fmt.Errorf("unknown config key %q", args[0])
-			}
-			return config.Save(deps.ConfigPath, cfg)
-		},
-	})
 	return cmd
 }
 
@@ -307,7 +202,8 @@ func newUpdateCommand(deps Deps) *cobra.Command {
 	var installDir string
 	cmd := &cobra.Command{
 		Use:   "update",
-		Short: "Update Aether CLI to the latest GitHub release",
+		Short: "Update aethercli to the latest GitHub release",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			release, err := deps.UpdateChecker.Latest(cmd.Context())
 			if err != nil {
@@ -317,6 +213,9 @@ func newUpdateCommand(deps Deps) *cobra.Command {
 				return fmt.Errorf("latest release did not include a version")
 			}
 			if deps.CurrentVersion != "dev" && !update.IsNewerVersion(deps.CurrentVersion, release.Version) {
+				if jsonRequested(cmd) {
+					return writeJSON(deps.Out, map[string]any{"updated": false, "version": deps.CurrentVersion})
+				}
 				_, err = fmt.Fprintln(deps.Out, "You already have the newest version.")
 				return err
 			}
@@ -331,6 +230,9 @@ func newUpdateCommand(deps Deps) *cobra.Command {
 			})
 			if err != nil {
 				return err
+			}
+			if jsonRequested(cmd) {
+				return writeJSON(deps.Out, map[string]any{"updated": true, "version": release.Version, "path": result.Path})
 			}
 			_, err = fmt.Fprintf(deps.Out, "Updated aethercli to %s\nBinary: %s\n", release.Version, result.Path)
 			return err
@@ -347,7 +249,7 @@ func runInteractive(ctx context.Context, deps Deps) error {
 		return err
 	}
 	resolvedPrompt, err := prompt.Resolve(prompt.Options{
-		Ask: lineAsker(deps.Err, reader),
+		Ask: promptAsker(deps, reader),
 	})
 	if err != nil {
 		return err
@@ -368,7 +270,7 @@ func runTUI(ctx context.Context, deps Deps, cfg config.Config, apiKey string, op
 		return fmt.Errorf("missing model: pass --model or run `aethercli setup`")
 	}
 	return deps.TUIRunner(ctx, TUIOptions{
-		ConfigPath:    deps.ConfigPath,
+		ConfigPath:    deps.path(),
 		Config:        cfg,
 		APIKey:        apiKey,
 		Model:         model,
@@ -389,7 +291,7 @@ func runAsk(ctx context.Context, deps Deps, cfg config.Config, apiKey string, re
 
 	client := deps.ClientFactory(cfg.BaseURL, apiKey)
 	if opts.stream {
-		stopThinking := startThinkingSpinner(deps.Err, thinkingSpinnerInterval)
+		stopThinking := thinkingSpinner(deps)
 		firstDelta := true
 		err := client.StreamChat(ctx, req, func(delta string) error {
 			if firstDelta {
@@ -414,7 +316,7 @@ func runAsk(ctx context.Context, deps Deps, cfg config.Config, apiKey string, re
 	}
 
 	stopThinking := func() {}
-	if !opts.jsonOut {
+	if !opts.jsonOut && deps.Interactive() {
 		stopThinking = startThinkingSpinner(deps.Err, thinkingSpinnerInterval)
 	}
 
@@ -433,14 +335,23 @@ func runAsk(ctx context.Context, deps Deps, cfg config.Config, apiKey string, re
 }
 
 func ensureConfigured(deps Deps, reader *bufio.Reader, requireDefaultModel bool) (config.Config, string, error) {
-	cfg, err := config.Load(deps.ConfigPath)
+	cfg, err := loadConfig(deps)
 	if err != nil {
 		return config.Config{}, "", err
 	}
 
 	apiKey, keyErr := secrets.ResolveAPIKey(deps.Secrets)
+	if keyErr != nil && !errors.Is(keyErr, secrets.ErrMissingAPIKey) {
+		return config.Config{}, "", authError(keyErr)
+	}
 	if errors.Is(keyErr, secrets.ErrMissingAPIKey) || (requireDefaultModel && strings.TrimSpace(cfg.DefaultModel) == "") {
-		return runSetup(deps, reader)
+		if deps.Interactive() {
+			return runSetup(deps, reader)
+		}
+		if keyErr != nil {
+			return config.Config{}, "", authError(keyErr)
+		}
+		return config.Config{}, "", usageError("missing model: pass --model or set config default-model")
 	}
 	if keyErr != nil {
 		return config.Config{}, "", keyErr
@@ -449,35 +360,47 @@ func ensureConfigured(deps Deps, reader *bufio.Reader, requireDefaultModel bool)
 }
 
 func runSetup(deps Deps, reader *bufio.Reader) (config.Config, string, error) {
+	cfg, err := loadConfig(deps)
+	if err != nil {
+		return config.Config{}, "", err
+	}
 	ask := lineAsker(deps.Err, reader)
 
-	apiKey, err := ask("AetherAPI key")
+	var apiKey string
+	if input, ok := deps.In.(*os.File); ok && term.IsTerminal(input.Fd()) {
+		if _, err := fmt.Fprint(deps.Err, "AetherAPI key: "); err != nil {
+			return config.Config{}, "", err
+		}
+		value, readErr := term.ReadPassword(input.Fd())
+		_, _ = fmt.Fprintln(deps.Err)
+		apiKey, err = string(value), readErr
+	} else {
+		apiKey, err = ask("AetherAPI key")
+	}
 	if err != nil {
 		return config.Config{}, "", err
 	}
 	apiKey, err = secrets.NormalizeAPIKey(apiKey)
 	if err != nil {
-		return config.Config{}, "", err
+		return config.Config{}, "", authError(err)
 	}
-	if err := deps.Secrets.Set(apiKey); err != nil {
-		return config.Config{}, "", err
-	}
-
 	defaultModel, err := ask("Default model")
 	if err != nil {
 		return config.Config{}, "", err
 	}
 	defaultModel = strings.TrimSpace(defaultModel)
 	if defaultModel == "" {
-		return config.Config{}, "", fmt.Errorf("default model cannot be empty")
+		return config.Config{}, "", usageError("default model cannot be empty")
 	}
 
-	cfg, err := config.Load(deps.ConfigPath)
-	if err != nil {
-		return config.Config{}, "", err
-	}
 	cfg.DefaultModel = defaultModel
-	if err := config.Save(deps.ConfigPath, cfg); err != nil {
+	if err := config.Validate(cfg); err != nil {
+		return config.Config{}, "", usageError(err.Error())
+	}
+	if err := deps.Secrets.Set(apiKey); err != nil {
+		return config.Config{}, "", authError(err)
+	}
+	if err := config.Save(deps.path(), cfg); err != nil {
 		return config.Config{}, "", err
 	}
 
@@ -501,25 +424,12 @@ func lineAsker(out io.Writer, reader *bufio.Reader) func(label string) (string, 
 	}
 }
 
-func printModels(out io.Writer, models []api.Model) error {
-	writer := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(writer, "ID\tPROVIDER\tCONTEXT\tPRICE"); err != nil {
-		return err
-	}
-	for _, model := range models {
-		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", model.ID, model.OwnedBy, model.Context, model.OurPrice); err != nil {
-			return err
-		}
-	}
-	return writer.Flush()
-}
-
 func runAutoUpdateCheck(ctx context.Context, deps Deps, cmd *cobra.Command) error {
 	if shouldSkipAutoUpdateCheck(deps, cmd) {
 		return nil
 	}
 
-	cfg, err := config.Load(deps.ConfigPath)
+	cfg, err := loadConfig(deps)
 	if err != nil {
 		return nil
 	}
@@ -540,7 +450,7 @@ func runAutoUpdateCheck(ctx context.Context, deps Deps, cmd *cobra.Command) erro
 		LastCheckedAt:   now,
 		LastSeenVersion: release.Version,
 	}
-	_ = config.Save(deps.ConfigPath, cfg)
+	_ = config.Save(deps.path(), cfg)
 
 	if update.IsNewerVersion(deps.CurrentVersion, release.Version) {
 		_, _ = fmt.Fprintf(deps.Err, "Update available: aethercli %s -> %s\nRun `aethercli update` to install it.\n", deps.CurrentVersion, release.Version)
@@ -549,6 +459,9 @@ func runAutoUpdateCheck(ctx context.Context, deps Deps, cmd *cobra.Command) erro
 }
 
 func shouldSkipAutoUpdateCheck(deps Deps, cmd *cobra.Command) bool {
+	if !deps.Interactive() || (cmd.Name() != "ask" && cmd.Name() != "chat" && cmd.Name() != "tui" && cmd.Parent() != nil) {
+		return true
+	}
 	if deps.CurrentVersion == "" || deps.CurrentVersion == "dev" {
 		return true
 	}
@@ -635,7 +548,7 @@ func flushIfSupported(out io.Writer) error {
 func userFacingError(err error) error {
 	var apiErr *api.APIError
 	if errors.As(err, &apiErr) {
-		return errors.New(apiErr.UserMessage())
+		return classifyError(apiErr)
 	}
 	return err
 }
@@ -660,6 +573,9 @@ func normalizeDeps(deps Deps) Deps {
 				APIKey:  apiKey,
 			})
 		}
+	}
+	if deps.Interactive == nil {
+		deps.Interactive = func() bool { return terminalIO(deps.In, deps.Out) }
 	}
 	if deps.StdinHasData == nil {
 		deps.StdinHasData = stdinHasData

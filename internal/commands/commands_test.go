@@ -303,11 +303,12 @@ func TestAskPlainOutputShowsThinkingIndicator(t *testing.T) {
 	}
 
 	cmd := NewRootCommand(Deps{
-		ConfigPath: configPath,
-		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
-		In:         strings.NewReader(""),
-		Out:        &out,
-		Err:        &errOut,
+		Interactive: func() bool { return true },
+		ConfigPath:  configPath,
+		Secrets:     &memorySecretStore{key: "sk-aetherapi-test"},
+		In:          strings.NewReader(""),
+		Out:         &out,
+		Err:         &errOut,
 		ClientFactory: func(baseURL, apiKey string) APIClient {
 			return fakeClient
 		},
@@ -388,8 +389,9 @@ func TestRootNoArgsRunsSetupAndAsksPrompt(t *testing.T) {
 	var errOut bytes.Buffer
 
 	cmd := NewRootCommand(Deps{
-		ConfigPath: filepath.Join(t.TempDir(), "config.json"),
-		Secrets:    store,
+		Interactive: func() bool { return true },
+		ConfigPath:  filepath.Join(t.TempDir(), "config.json"),
+		Secrets:     store,
 		In: strings.NewReader(strings.Join([]string{
 			"Bearer sk-aetherapi-test",
 			"claude-sonnet-4-6",
@@ -475,11 +477,12 @@ func TestChatWithoutPromptStartsTUIRunner(t *testing.T) {
 	calls := 0
 
 	cmd := NewRootCommand(Deps{
-		ConfigPath: configPath,
-		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
-		In:         strings.NewReader(""),
-		Out:        &bytes.Buffer{},
-		Err:        &bytes.Buffer{},
+		Interactive: func() bool { return true },
+		ConfigPath:  configPath,
+		Secrets:     &memorySecretStore{key: "sk-aetherapi-test"},
+		In:          strings.NewReader(""),
+		Out:         &bytes.Buffer{},
+		Err:         &bytes.Buffer{},
 		ClientFactory: func(baseURL, apiKey string) APIClient {
 			return &fakeAPIClient{}
 		},
@@ -546,11 +549,12 @@ func TestTUICommandPassesSessionToRunner(t *testing.T) {
 	calls := 0
 
 	cmd := NewRootCommand(Deps{
-		ConfigPath: configPath,
-		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
-		In:         strings.NewReader(""),
-		Out:        &bytes.Buffer{},
-		Err:        &bytes.Buffer{},
+		Interactive: func() bool { return true },
+		ConfigPath:  configPath,
+		Secrets:     &memorySecretStore{key: "sk-aetherapi-test"},
+		In:          strings.NewReader(""),
+		Out:         &bytes.Buffer{},
+		Err:         &bytes.Buffer{},
 		ClientFactory: func(baseURL, apiKey string) APIClient {
 			return &fakeAPIClient{}
 		},
@@ -652,11 +656,12 @@ func TestAskStreamFlushesEachDelta(t *testing.T) {
 	}
 
 	cmd := NewRootCommand(Deps{
-		ConfigPath: configPath,
-		Secrets:    &memorySecretStore{key: "sk-aetherapi-test"},
-		In:         strings.NewReader(""),
-		Out:        out,
-		Err:        &errOut,
+		Interactive: func() bool { return true },
+		ConfigPath:  configPath,
+		Secrets:     &memorySecretStore{key: "sk-aetherapi-test"},
+		In:          strings.NewReader(""),
+		Out:         out,
+		Err:         &errOut,
 		ClientFactory: func(baseURL, apiKey string) APIClient {
 			return fakeClient
 		},
@@ -681,6 +686,7 @@ func TestAutoUpdateCheckPrintsHintWhenReleaseIsNewer(t *testing.T) {
 	var errOut bytes.Buffer
 
 	cmd := NewRootCommand(Deps{
+		Interactive:    func() bool { return true },
 		ConfigPath:     configPath,
 		Secrets:        &memorySecretStore{key: "sk-aetherapi-test"},
 		In:             strings.NewReader(""),
@@ -691,7 +697,7 @@ func TestAutoUpdateCheckPrintsHintWhenReleaseIsNewer(t *testing.T) {
 		CurrentVersion: "v1.2.3",
 		Now:            func() time.Time { return time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC) },
 	})
-	cmd.SetArgs([]string{"models"})
+	cmd.SetArgs([]string{"ask", "hello"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)
@@ -714,6 +720,7 @@ func TestAutoUpdateCheckUsesDailyThrottle(t *testing.T) {
 	fakeClient := &fakeAPIClient{models: []api.Model{{ID: "chat", Endpoint: "/v1/chat/completions"}}}
 
 	cmd := NewRootCommand(Deps{
+		Interactive:    func() bool { return true },
 		ConfigPath:     configPath,
 		Secrets:        &memorySecretStore{key: "sk-aetherapi-test"},
 		In:             strings.NewReader(""),
@@ -724,7 +731,7 @@ func TestAutoUpdateCheckUsesDailyThrottle(t *testing.T) {
 		CurrentVersion: "v1.2.3",
 		Now:            func() time.Time { return time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC) },
 	})
-	cmd.SetArgs([]string{"models"})
+	cmd.SetArgs([]string{"ask", "hello"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v", err)

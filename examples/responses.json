@@ -1,0 +1,5 @@
+{
+  "model": "MODEL_ID",
+  "input": "Reply with one short sentence.",
+  "max_output_tokens": 128
+}

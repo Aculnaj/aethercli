@@ -1,163 +1,198 @@
-# Aether CLI
+# aethercli — Go command-line client for AetherAPI
 
-`aethercli` is a small Go CLI for AetherAPI text models. It stores your AetherAPI key once, lets you choose a default model, and then sends prompts from your terminal.
+`aethercli` is the Go CLI in [github.com/Aculnaj/aethercli](https://github.com/Aculnaj/aethercli).
+It supports normal AetherAPI keys, dynamic model discovery, prompts, streaming,
+cost previews, saved conversations and a terminal chat UI, plus an automation
+surface for agents and CI. The executable and Go package are named `aethercli`.
+Aether Connect's Node launcher is a separate product; its restricted tokens are
+not credentials for this CLI.
+
+## Documentation for people and agents
+
+- [Complete CLI reference](docs/cli-reference.md) — commands, flags, JSON, errors, exit codes and examples.
+- [Plain Markdown reference](https://raw.githubusercontent.com/Aculnaj/aethercli/main/docs/cli-reference.md).
+- [Plain README](https://raw.githubusercontent.com/Aculnaj/aethercli/main/README.md).
+- [Optional discovery index](llms.txt) ([plain text](https://raw.githubusercontent.com/Aculnaj/aethercli/main/llms.txt)).
+- [Public retrieval audit and limits](docs/discoverability-audit.md).
+- [AetherAPI documentation](https://aetherapi.dev/docs/quickstart).
+
+The new reference/discovery files become publicly available after this change
+lands on `main`. For an unmerged checkout, use its local Markdown and executable
+help. This repository does not host a documentation website. `llms.txt` is a
+navigation aid, not a promise of search indexing.
+
+```sh
+aethercli --help --json
+aethercli models show --help --json
+aethercli help api --json
+```
+
+Help is generated from the running CLI and includes commands, flags, defaults
+and exit codes with `schema_version: 1`.
 
 ## Install
 
-From GitHub Releases:
+From GitHub Releases (Linux/macOS):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Aculnaj/aethercli/main/install.sh | sh
 ```
 
-The installer places `aethercli` in `~/.local/bin` by default. Override with:
+The installer puts `aethercli` in `~/.local/bin`. To choose a directory, download
+and run it with `AETHER_INSTALL_DIR`:
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/Aculnaj/aethercli/main/install.sh -o install.sh
 AETHER_INSTALL_DIR=/usr/local/bin sh install.sh
 ```
 
-From source:
+From source (Go 1.24.2 or newer):
 
 ```sh
 go install github.com/Aculnaj/aethercli/cmd/aethercli@latest
 ```
 
-## First Run
-
-Run setup once:
+A new command documented in this branch may require building this checkout
+until a release includes it:
 
 ```sh
-aethercli setup
+go build -o /tmp/aethercli ./cmd/aethercli
+/tmp/aethercli --help --json
 ```
 
-The CLI asks for:
+## Credentials and first run
 
-- your AetherAPI key, which must start with `sk-aetherapi-`
-- your default text model, for example `claude-sonnet-4-6`
+In a terminal, run `aethercli setup`. The key input is hidden, and the key is
+stored in the OS keychain under the existing service `aether`, account `api-key`.
+Non-secret config stays at your OS user config directory's `aether/config.json`.
+Those existing storage names remain compatible.
 
-The key is stored in the OS Keychain under service `aether` and account `api-key`. Non-secret config is stored in your user config directory at `aether/config.json`.
+For agents and CI, inject a normal `sk-aetherapi-…` key through your environment's
+secret manager as `AETHER_API_KEY`. It takes precedence over the keychain. Never
+put keys in request JSON, CLI arguments, repository files or config. No browser
+login is needed. OS keychain access can be subject to OS unlock/access policies;
+use the environment variable when an unattended process must avoid those dialogs.
 
-You can also use an environment variable instead of the keychain:
+## Read-only automation
 
 ```sh
-export AETHER_API_KEY=sk-aetherapi-...
+aethercli models --json
+aethercli models list --all --json
+aethercli status --offline --json
+aethercli doctor --json
+aethercli usage --period 7 --json
+aethercli budget --json
+aethercli config get --json
+aethercli config validate --json
+aethercli config set default-model MODEL_ID --dry-run --json
 ```
 
-`AETHER_API_KEY` takes precedence over the stored key.
+Replace `MODEL_ID` with an ID returned by the live catalog. `models --json`
+retains its existing array of chat models; `models list --all` includes other
+endpoints. `doctor` and online `status` use only GET requests to `/models` and
+`/usage`; neither sends a paid provider request or changes local state.
+`usage` calls `/v1/usage`; `budget` calls `/v1/budget-alerts`. Backend reports,
+coverage, scopes and forecast labels are retained without invented totals.
 
-## Usage
+`--json` and `--non-interactive` disable interactive behavior even in a terminal.
+Without a terminal, no setup, prompt, TUI, spinner or automatic update check is
+started. Errors go to stderr, results to stdout. Use exit status rather than
+matching human messages; [the reference](docs/cli-reference.md#errors-and-exit-codes)
+defines the contract.
 
-Ask with an explicit model:
+## Prompts, streaming and chat
+
+The following inference examples can incur provider charges. Select a current
+chat model instead of assuming any particular model is always available:
 
 ```sh
-aethercli ask "Write a short haiku about terminals" --model claude-sonnet-4-6
+aethercli ask "Explain DNS in one paragraph" --model MODEL_ID --json
+printf '%s\n' 'Explain this error' | aethercli ask --model MODEL_ID --non-interactive
+aethercli ask "Review this implementation" --file internal/api/api.go --model MODEL_ID
+aethercli ask "Find risks in this project" --context . --model MODEL_ID
+aethercli ask "Draft a release note" --stream --model MODEL_ID
+aethercli ask "Explain this diff" --estimate --max-tokens 1000 --model MODEL_ID --json
 ```
 
-Ask with your saved default model:
+`--estimate` fetches only the catalog. Token and cost previews are explicitly
+heuristic estimates, not billed usage or a quote. Directory context skips common
+build directories and honors simple `.gitignore` patterns.
+
+After saving a default model, retain the interactive and conversation workflows:
 
 ```sh
-aethercli ask "Explain DNS in one paragraph"
-```
-
-Pipe a longer prompt:
-
-```sh
-cat prompt.txt | aethercli ask --model gpt-4o
-```
-
-Add project context from files or directories:
-
-```sh
-aethercli ask "Review this implementation" --file internal/api/api.go
-aethercli ask "Find risks in this project" --context .
-```
-
-Directory context skips common build folders and honors simple `.gitignore`
-patterns.
-
-Start interactive mode:
-
-```sh
+aethercli config set default-model MODEL_ID
 aethercli
-```
-
-Start the Bubble Tea chat TUI:
-
-```sh
 aethercli chat
 aethercli tui
+aethercli chat "Help me debug this failing test" --json
+aethercli chat --resume "Continue with a smaller fix" --json
+aethercli sessions list --json
 ```
 
-Inside the TUI, type `/help` for commands such as `/models`, `/sessions`,
-`/resume <id>`, `/new`, `/clear`, and `/quit`.
+Inside the TUI, `/help` lists `/models`, `/sessions`, `/resume <id>`, `/new`,
+`/clear` and `/quit`. Sessions store conversation text locally; treat it as
+sensitive. `aethercli sessions show SESSION_ID --json` uses an ID from the list.
 
-Send or resume a saved chat session without opening the TUI:
+## Explicit requests and sandbox
+
+Request files in [examples](examples) are templates: replace `MODEL_ID` with a
+catalog model supporting that endpoint before making a real request.
 
 ```sh
-aethercli chat "Help me debug this failing test"
-aethercli chat --resume "Continue with a smaller fix"
-aethercli sessions list
-aethercli sessions show 20260612-103000
+aethercli api --protocol chat --request request.json --json
+cat request.json | aethercli api --endpoint responses --request - --stream
 ```
 
-Stream output live:
+The endpoint or protocol is required. No automatic retries or fallback calls are
+made. Streaming forwards SSE, detects server errors after partial output, and
+returns a nonzero status for truncated streams.
+
+The explicit sandbox command always uses `/v1/sandbox/*` and `aether-sandbox`:
 
 ```sh
-aethercli ask "Draft a release note" --stream
+aethercli sandbox --scenario success --json
+aethercli sandbox --scenario rate_limit --json
+aethercli sandbox --scenario timeout --json
+aethercli sandbox --scenario provider_unavailable --json
+aethercli sandbox --scenario stream_error --stream --json
 ```
 
-Print JSON:
+The server must enable `AETHER_SANDBOX_ENABLED`; failures never fall back to real
+provider routes. Simulated failures intentionally return nonzero exit statuses.
+See the reference for all three supported sandbox protocols and timeouts.
+
+## Updates and configuration
+
+`aethercli update` explicitly installs the latest GitHub release. Release builds
+may print a daily update hint during interactive ask/chat/TUI use. Automation,
+diagnostics, config commands and JSON/help calls skip automatic checks.
 
 ```sh
-aethercli ask "Summarize this in one sentence" --json
+aethercli config get default-model --json
+aethercli config clear key --dry-run --json
+aethercli --config /tmp/aethercli-config.json config set default-model MODEL_ID --json
 ```
 
-Preview estimated tokens and cost before sending a request:
-
-```sh
-aethercli ask "Explain this diff" --estimate --max-tokens 1000
-```
-
-List text/chat models:
-
-```sh
-aethercli models
-aethercli models --json
-```
-
-Update the CLI when a new GitHub release is available:
-
-```sh
-aethercli update
-```
-
-Release builds also check for updates automatically at most once per day and print a hint when a newer version exists.
-
-Manage config:
-
-```sh
-aethercli config get
-aethercli config set default-model claude-sonnet-4-6
-aethercli config get default-model
-aethercli config clear key
-aethercli config clear
-```
+Config writes use private temporary files and atomic replacement, preserve
+unknown aethercli fields, and refuse symlinks and unrelated tool schemas. The
+CLI does not write connector configurations for other applications.
 
 ## Development
 
-Run tests:
-
 ```sh
 go test ./...
-```
-
-Build locally:
-
-```sh
+go test -race ./...
+go vet ./...
 go build ./cmd/aethercli
+sh scripts/smoke.sh
 ```
 
-Create release artifacts locally if GoReleaser is installed:
+Tests use local fake servers and fake secret stores, without paid provider
+calls or production state. `scripts/smoke.sh` checks the built executable and
+packaging conventions. GoReleaser builds `aethercli` for Linux, macOS and Windows,
+on amd64/arm64; its release archives include the Markdown reference and examples.
+To build release archives locally with GoReleaser installed:
 
 ```sh
 goreleaser release --snapshot --clean
