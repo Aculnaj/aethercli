@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -50,12 +49,17 @@ type Model struct {
 	OurPrice           string   `json:"our_price,omitempty"`
 	Endpoint           string   `json:"endpoint,omitempty"`
 	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
+	// Optional catalog metadata remains opaque so new capabilities and price
+	// shapes never break clients or turn an absent capability into a guess.
+	Metadata map[string]json.RawMessage `json:"-"`
 }
 
 type APIError struct {
 	StatusCode int
 	Code       string
 	Message    string
+	RetryAfter string
+	RequestID  string
 }
 
 func NewClient(opts ClientOptions) *Client {
@@ -81,7 +85,7 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return ChatResponse{}, parseAPIError(resp)
 	}
 
@@ -93,11 +97,11 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error
 			} `json:"message"`
 		} `json:"choices"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return ChatResponse{}, err
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(&decoded); err != nil {
+		return ChatResponse{}, &APIError{Code: "invalid_response", Message: "Malformed JSON chat response"}
 	}
 	if len(decoded.Choices) == 0 || decoded.Choices[0].Message.Content == "" {
-		return ChatResponse{}, fmt.Errorf("malformed API response: missing assistant content")
+		return ChatResponse{}, &APIError{Code: "invalid_response", Message: "Malformed API response: missing assistant content"}
 	}
 	return ChatResponse{
 		Model:   firstNonEmpty(decoded.Model, req.Model),
@@ -113,8 +117,11 @@ func (c *Client) StreamChat(ctx context.Context, req ChatRequest, onDelta func(d
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return parseAPIError(resp)
+	}
+	if !strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		return &APIError{Code: "invalid_stream", Message: "Expected text/event-stream"}
 	}
 	return parseSSE(resp.Body, onDelta)
 }
@@ -129,17 +136,20 @@ func (c *Client) Models(ctx context.Context) ([]Model, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, parseAPIError(resp)
 	}
 
 	var decoded struct {
-		Data []Model `json:"data"`
+		Data *[]Model `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-		return nil, err
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(&decoded); err != nil {
+		return nil, &APIError{Code: "invalid_response", Message: "Malformed JSON model catalog"}
 	}
-	return decoded.Data, nil
+	if decoded.Data == nil {
+		return nil, &APIError{Code: "invalid_response", Message: "Model catalog is missing data array"}
+	}
+	return *decoded.Data, nil
 }
 
 func FilterChatModels(models []Model) []Model {
@@ -165,6 +175,9 @@ func (m Model) SupportsChatCompletions() bool {
 }
 
 func (e *APIError) Error() string {
+	if e.StatusCode == 0 {
+		return fmt.Sprintf("AetherAPI protocol error (%s): %s", e.Code, e.Message)
+	}
 	if e.Code != "" && e.Message != "" {
 		return fmt.Sprintf("AetherAPI error %d (%s): %s", e.StatusCode, e.Code, e.Message)
 	}
@@ -242,18 +255,10 @@ func chatPayloadFromRequest(req ChatRequest, stream bool) chatPayload {
 }
 
 func parseSSE(body io.Reader, onDelta func(delta string) error) error {
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, ":") || !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	return consumeSSE(body, func(_ string, data string, _ string) error {
 		if data == "[DONE]" {
 			return nil
 		}
-
 		var event struct {
 			Choices []struct {
 				Delta struct {
@@ -272,13 +277,13 @@ func parseSSE(body io.Reader, onDelta func(delta string) error) error {
 				return err
 			}
 		}
-	}
-	return scanner.Err()
+		return nil
+	})
 }
 
 func parseAPIError(resp *http.Response) error {
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	apiErr := &APIError{StatusCode: resp.StatusCode}
+	apiErr := &APIError{StatusCode: resp.StatusCode, RetryAfter: resp.Header.Get("Retry-After"), RequestID: resp.Header.Get("X-Request-Id")}
 
 	var decoded struct {
 		Error struct {
@@ -295,7 +300,8 @@ func parseAPIError(resp *http.Response) error {
 		}
 	}
 	if apiErr.Message == "" {
-		apiErr.Message = strings.TrimSpace(string(data))
+		// Do not echo HTML proxies, request bodies or credentials in diagnostics.
+		apiErr.Message = http.StatusText(resp.StatusCode)
 	}
 	return apiErr
 }
@@ -303,7 +309,9 @@ func parseAPIError(resp *http.Response) error {
 func defaultHTTPClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = defaultRequestTimeout
-	return &http.Client{Transport: transport}
+	return &http.Client{Transport: transport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
 }
 
 func withDefaultTimeout(ctx context.Context) (context.Context, context.CancelFunc) {

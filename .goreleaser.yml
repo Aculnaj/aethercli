@@ -26,6 +26,12 @@ archives:
   - id: default
     ids:
       - aethercli
+    files:
+      - LICENSE*
+      - README.md
+      - llms.txt
+      - docs/*.md
+      - examples/*.json
     formats:
       - tar.gz
     format_overrides:

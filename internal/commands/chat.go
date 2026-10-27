@@ -20,6 +20,7 @@ import (
 
 type chatOptions struct {
 	model       string
+	jsonOut     bool
 	resume      bool
 	sessionID   string
 	files       []string
@@ -33,7 +34,7 @@ func newChatCommand(deps Deps) *cobra.Command {
 		Short: "Send a prompt with saved conversation history",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			reader := bufio.NewReader(deps.In)
-			cfg, apiKey, err := ensureConfigured(deps, reader, true)
+			cfg, apiKey, err := ensureConfigured(deps, reader, strings.TrimSpace(opts.model) == "")
 			if err != nil {
 				return err
 			}
@@ -44,7 +45,7 @@ func newChatCommand(deps Deps) *cobra.Command {
 				Args:         args,
 				Stdin:        deps.In,
 				StdinHasData: deps.StdinHasData(),
-				Ask:          lineAsker(deps.Err, reader),
+				Ask:          promptAsker(deps, reader),
 			})
 			if err != nil {
 				return err
@@ -57,6 +58,7 @@ func newChatCommand(deps Deps) *cobra.Command {
 			if model == "" {
 				return fmt.Errorf("missing model: pass --model or run `aethercli setup`")
 			}
+			opts.jsonOut = jsonRequested(cmd)
 			return runChat(cmd.Context(), deps, cfg, apiKey, model, resolvedPrompt, opts)
 		},
 	}
@@ -73,9 +75,10 @@ func newTUICommand(deps Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tui",
 		Short: "Start the interactive Bubble Tea chat UI",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			reader := bufio.NewReader(deps.In)
-			cfg, apiKey, err := ensureConfigured(deps, reader, true)
+			cfg, apiKey, err := ensureConfigured(deps, reader, strings.TrimSpace(opts.model) == "")
 			if err != nil {
 				return err
 			}
@@ -96,14 +99,18 @@ func newSessionsCommand(deps Deps) *cobra.Command {
 	cmd.AddCommand(&cobra.Command{
 		Use:   "list",
 		Short: "List saved chat sessions",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := session.NewStore(deps.ConfigPath, deps.Now)
+			store, err := session.NewStore(deps.path(), deps.Now)
 			if err != nil {
 				return err
 			}
 			summaries, err := store.List()
 			if err != nil {
 				return err
+			}
+			if jsonRequested(cmd) {
+				return writeJSON(deps.Out, summaries)
 			}
 			return printSessionSummaries(deps.Out, summaries)
 		},
@@ -113,7 +120,7 @@ func newSessionsCommand(deps Deps) *cobra.Command {
 		Short: "Print a saved chat session",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := session.NewStore(deps.ConfigPath, deps.Now)
+			store, err := session.NewStore(deps.path(), deps.Now)
 			if err != nil {
 				return err
 			}
@@ -130,7 +137,7 @@ func newSessionsCommand(deps Deps) *cobra.Command {
 }
 
 func runChat(ctx context.Context, deps Deps, cfg config.Config, apiKey, model, userPrompt string, opts chatOptions) error {
-	store, err := session.NewStore(deps.ConfigPath, deps.Now)
+	store, err := session.NewStore(deps.path(), deps.Now)
 	if err != nil {
 		return err
 	}
@@ -146,7 +153,7 @@ func runChat(ctx context.Context, deps Deps, cfg config.Config, apiKey, model, u
 	}
 	requestPrompt := conversationPrompt(item.Messages, promptWithFiles)
 	client := deps.ClientFactory(cfg.BaseURL, apiKey)
-	stopThinking := startThinkingSpinner(deps.Err, thinkingSpinnerInterval)
+	stopThinking := thinkingSpinner(deps)
 	resp, err := client.Chat(ctx, api.ChatRequest{
 		Model:  model,
 		Prompt: requestPrompt,
@@ -164,6 +171,9 @@ func runChat(ctx context.Context, deps Deps, cfg config.Config, apiKey, model, u
 	}
 	if err := store.Save(item); err != nil {
 		return err
+	}
+	if opts.jsonOut {
+		return writeJSON(deps.Out, resp)
 	}
 	_, err = fmt.Fprintln(deps.Out, resp.Content)
 	return err
