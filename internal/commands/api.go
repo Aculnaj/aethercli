@@ -67,7 +67,7 @@ func newAPICommand(deps Deps) *cobra.Command {
 		Short:   "POST an explicit JSON request file or stdin to an API endpoint",
 		Args:    cobra.NoArgs,
 		Example: "  aethercli api --protocol chat --request request.json\n  cat request.json | aethercli api --endpoint responses --request - --stream",
-		Long:    "Send a real API request using AETHER_API_KEY or the OS keychain. Select exactly one endpoint or protocol. Request fields are passed through; there are no retries. --stream forwards SSE and reports in-band errors on stderr.",
+		Long:    "Send a real API request using AETHER_API_KEY or the OS keychain. Select exactly one endpoint or protocol. Request fields are passed through; there are no retries. --stream forwards SSE and reports in-band errors on stderr. A non-streamed Responses object with status failed, incomplete or cancelled is an error (nonzero exit, empty stdout, response_status in the JSON error).",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if (endpoint == "") == (protocol == "") {
 				return usageError("choose exactly one of --endpoint or --protocol")

@@ -60,6 +60,9 @@ type APIError struct {
 	Message    string
 	RetryAfter string
 	RequestID  string
+	// ResponseStatus is set for a terminal Responses API status delivered
+	// with HTTP 2xx (failed, incomplete or cancelled).
+	ResponseStatus string
 }
 
 func NewClient(opts ClientOptions) *Client {
