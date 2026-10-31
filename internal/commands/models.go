@@ -11,8 +11,23 @@ import (
 
 func newModelsCommand(deps Deps) *cobra.Command {
 	var all bool
-	var provider, endpoint, capability, search string
+	var provider, endpoint, search string
+	var capabilities []string
 	list := func(cmd *cobra.Command, args []string) error {
+		want := ""
+		if endpoint != "" {
+			if want = api.NormalizeEndpoint(endpoint); want == "" || strings.Contains(endpoint, "://") {
+				return usageError("endpoint must be an API path such as chat/completions or /v1/responses")
+			}
+		}
+		if len(capabilities) > 0 && want == "" {
+			return usageError("--capability requires --endpoint: capabilities are declared per endpoint, e.g. --endpoint chat/completions --capability tool_calling")
+		}
+		for _, feature := range capabilities {
+			if err := api.ValidateCapabilityPath(feature); err != nil {
+				return usageError(err.Error())
+			}
+		}
 		cfg, err := loadConfig(deps)
 		if err != nil {
 			return err
@@ -32,20 +47,11 @@ func newModelsCommand(deps Deps) *cobra.Command {
 			if search != "" && !strings.Contains(strings.ToLower(m.ID), strings.ToLower(search)) {
 				continue
 			}
-			if capability != "" && !m.HasCapability(capability) {
+			if want != "" && !m.DeclaresEndpoint(want) {
 				continue
 			}
-			if endpoint != "" {
-				want := "/v1/" + strings.TrimPrefix(strings.TrimPrefix(endpoint, "/v1/"), "/")
-				match := m.Endpoint == want || "/v1/"+strings.TrimPrefix(m.Endpoint, "/") == want
-				for _, e := range m.SupportedEndpoints {
-					if e == want || "/v1/"+strings.TrimPrefix(e, "/") == want {
-						match = true
-					}
-				}
-				if !match {
-					continue
-				}
+			if !allSupported(m, want, capabilities) {
+				continue
 			}
 			filtered = append(filtered, m)
 		}
@@ -68,12 +74,12 @@ func newModelsCommand(deps Deps) *cobra.Command {
 		Short:   "List chat models (legacy JSON array preserved)",
 		Args:    cobra.NoArgs,
 		RunE:    list,
-		Example: "  aethercli models --json\n  aethercli models list --all --provider OpenAI\n  aethercli models show MODEL_ID --json",
+		Example: "  aethercli models --json\n  aethercli models list --all --provider OpenAI\n  aethercli models list --endpoint chat/completions --capability tool_calling --json\n  aethercli models show MODEL_ID --json",
 	}
 	root.PersistentFlags().BoolVar(&all, "all", false, "include non-chat catalog models")
 	root.PersistentFlags().StringVar(&provider, "provider", "", "filter by exact provider name (case-insensitive)")
 	root.PersistentFlags().StringVar(&endpoint, "endpoint", "", "filter by declared endpoint, e.g. responses")
-	root.PersistentFlags().StringVar(&capability, "capability", "", "require an explicit true in capabilities (unknown never matches)")
+	root.PersistentFlags().StringArrayVar(&capabilities, "capability", nil, "repeatable; require capabilities[--endpoint].FEATURE == \"supported\" (unknown/unsupported/missing never match), e.g. tool_calling, structured_outputs.json_schema, modalities.input.image")
 	root.PersistentFlags().StringVar(&search, "search", "", "filter model IDs by substring")
 	root.AddCommand(&cobra.Command{
 		Use:   "list",
@@ -109,4 +115,15 @@ func newModelsCommand(deps Deps) *cobra.Command {
 		},
 	})
 	return root
+}
+
+// allSupported requires every feature to be explicitly "supported" for the
+// selected endpoint; there is no model-wide or cross-endpoint fallback.
+func allSupported(m api.Model, endpoint string, features []string) bool {
+	for _, feature := range features {
+		if m.Capability(endpoint, feature) != api.CapabilitySupported {
+			return false
+		}
+	}
+	return true
 }

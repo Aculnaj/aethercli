@@ -93,7 +93,9 @@ envelope is written on stderr; stdout remains empty for failures before output:
 }
 ```
 
-`http_status`, `retry_after` and `request_id` are optional. They are supplied when
+`http_status`, `retry_after`, `request_id` and `response_status` are optional.
+`response_status` (`failed`, `incomplete`, `cancelled`) marks a terminal
+Responses status that arrived with HTTP 2xx; see the `api` section. They are supplied when
 available from an HTTP error response; retry-after preserves the backend header
 as a string (seconds or HTTP date). Errors discovered inside a successful HTTP
 stream have their server code, or `stream_error`; they do not claim a different
@@ -114,7 +116,9 @@ put other secrets into prompts, arguments or backend error messages.
 Local codes include `invalid_arguments`, `invalid_config`,
 `credentials_unavailable`, `file_not_found`, `network_error`, `timeout`,
 `diagnostic_failed`, `invalid_response`, `invalid_stream`, `stream_truncated`,
-`response_too_large`, `sandbox_unverified`, `sandbox_base_url` and `canceled`.
+`response_too_large`, `sandbox_unverified`, `sandbox_base_url`, `canceled`,
+and for Responses without a server code `response.failed`,
+`response.incomplete` and `response.cancelled`.
 A backend error without a code uses `api_error`.
 
 `doctor`/`status` intentionally emit a complete report on stdout before returning
@@ -159,7 +163,8 @@ aethercli models list --json
 aethercli models list --all --json
 aethercli models list --provider OpenAI --search gpt --json
 aethercli models list --endpoint responses --json
-aethercli models list --all --capability tools --json
+aethercli models list --endpoint chat/completions --capability tool_calling --json
+aethercli models list --endpoint responses --capability structured_outputs.json_schema --json
 aethercli models show MODEL_ID --json
 ```
 
@@ -167,15 +172,36 @@ aethercli models show MODEL_ID --json
 The legacy `models --json` output remains an array of models declaring Chat
 Completions support. It is not wrapped in a new envelope. `--all` includes all
 catalog entries. `--endpoint PATH` selects models explicitly declaring that
-endpoint and also allows non-chat entries; paths accept `responses`, `/responses`
-or `/v1/responses`. `--provider` matches a provider exactly, ignoring case;
+endpoint in `endpoint`, `supported_endpoints` or as a key of the `capabilities`
+map (for example `/v1/responses/compact`), and also allows non-chat entries;
+paths accept `responses`, `/responses`, `v1/responses` or `/v1/responses`. URLs
+are rejected with exit 2. `--provider` matches a provider exactly, ignoring case;
 `--search` is a case-insensitive model-ID substring. Filters combine with AND.
 
-`--capability NAME` matches only an explicit `true` in the API's `capabilities`
-object. Missing, null or future structured values remain unknown. If the server
-does not publish capabilities yet, the filter returns an empty array. No model
-name or provider heuristics are used. `models show` searches the entire catalog,
-returns one model, and does not apply list filters.
+`--capability FEATURE` follows the API's versioned catalog contract
+(`capabilities_version: 1`): capabilities are declared per public endpoint as
+`capabilities["/v1/<endpoint>"].<feature>` with the string values `supported`,
+`unsupported` or `unknown`. The filter therefore **requires `--endpoint`**
+(otherwise exit 2, `invalid_arguments`) and keeps a model only if the value for
+exactly that endpoint is the string `supported`. `unsupported`, `unknown`, a
+missing endpoint or feature, `null`, malformed values, another
+`capabilities_version` and legacy model-wide booleans such as
+`capabilities.tool_calling: true` never match. One endpoint's declaration is
+never reused for another (for example Chat Completions for Responses). The flag
+is repeatable; all features must be supported (AND).
+
+FEATURE is a dotted path to a tri-state value, for example `tool_calling`,
+`parallel_tool_calls`, `structured_outputs.json_schema`,
+`modalities.input.image`, `modalities.output.text` or `reasoning.supported`.
+Future tri-state features can be named the same way. Groups
+(`structured_outputs`, `modalities`, `modalities.input`, `reasoning`), numeric
+limits (`max_output_tokens`, `output_token_limit`), `reasoning.options` and
+`access` are rejected with exit 2; inspect them with `models show MODEL_ID
+--json`. `models` uses the public catalog without credentials, so the
+authenticated `access` advice is not present there. If the server publishes no
+capabilities yet, the filter returns an empty array. No model name, provider or
+price heuristics are used. `models show` searches the entire catalog, returns
+one model, and does not apply list filters.
 
 Text listing shows ID, provider, context and the catalog's price string. `show`
 prints declared metadata and a short explanation. JSON retains legacy fields
@@ -249,6 +275,22 @@ a boolean `stream` in the request is honored unless the flag is explicitly set.
 `--stream=false` overrides a request's `stream: true`. Only the three text
 protocols accept streaming. Successful non-streaming responses must be valid
 JSON and are limited to 32 MiB; JSON is passed through, not wrapped.
+
+Non-streamed Responses (`--protocol responses`, `--endpoint responses` and the
+Responses sandbox) are additionally checked for a terminal status delivered with
+HTTP 2xx, matching the stream events `response.failed`/`response.incomplete`:
+
+- `status: "failed"` → error code from `error.code` (else `error.type`, else
+  `response.failed`); the message includes the response ID and `error.message`.
+- `status: "incomplete"` → `response.incomplete`, with `incomplete_details.reason`.
+- `status: "cancelled"` → `response.cancelled`.
+
+These exit 6 (or 4 for `rate_limit_exceeded`), set `response_status` in the JSON
+error envelope, carry no `http_status`, and write **nothing to stdout**: stdout
+holds only successful results. `completed`, and `queued`/`in_progress` from an
+explicitly requested background response, are passed through with exit 0. Chat
+Completions, Messages, embeddings and image JSON bodies are not reinterpreted;
+their failures are HTTP errors.
 `--timeout` defaults to 60s and bounds the whole operation, including a stream.
 
 Streaming stdout is SSE, including when `--json` is set. Events retain event

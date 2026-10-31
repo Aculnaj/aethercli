@@ -40,7 +40,10 @@ type CLIError struct {
 	HTTPStatus int    `json:"http_status,omitempty"`
 	RetryAfter string `json:"retry_after,omitempty"`
 	RequestID  string `json:"request_id,omitempty"`
-	cause      error
+	// ResponseStatus marks a terminal Responses API status (failed,
+	// incomplete, cancelled) that arrived with HTTP 2xx.
+	ResponseStatus string `json:"response_status,omitempty"`
+	cause          error
 }
 
 func (e *CLIError) Error() string { return e.Message }
@@ -78,7 +81,7 @@ func classifyError(err error) *CLIError {
 		if code == "" {
 			code = "api_error"
 		}
-		return &CLIError{Code: code, Message: redact(remote.UserMessage()), ExitCode: exit, HTTPStatus: remote.StatusCode, RetryAfter: remote.RetryAfter, RequestID: remote.RequestID}
+		return &CLIError{Code: code, Message: redact(remote.UserMessage()), ExitCode: exit, HTTPStatus: remote.StatusCode, RetryAfter: remote.RetryAfter, RequestID: remote.RequestID, ResponseStatus: remote.ResponseStatus}
 	}
 	if errors.Is(err, prompt.ErrEmptyPrompt) {
 		return &CLIError{Code: "invalid_arguments", Message: "Prompt is empty; pass text as an argument or stdin", ExitCode: ExitUsage}

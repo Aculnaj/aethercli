@@ -63,8 +63,61 @@ func (c *Client) Request(ctx context.Context, method, path string, payload any, 
 	if !json.Valid(data) {
 		return &APIError{Code: "invalid_response", Message: "Expected JSON response"}
 	}
+	if path == "/responses" || path == "/sandbox/responses" {
+		if err := responseStatusError(data); err != nil {
+			err.RequestID = resp.Header.Get("X-Request-Id")
+			return err
+		}
+	}
 	_, err = fmt.Fprintln(out, string(data))
 	return err
+}
+
+// responseStatusError reports a terminal Responses API failure delivered with
+// HTTP 2xx, using the same codes as the equivalent stream events
+// (response.failed/response.incomplete). Nothing is written to stdout then.
+// queued/in_progress (background mode) and completed remain successful, and
+// other protocols' JSON bodies are never inspected.
+func responseStatusError(data []byte) *APIError {
+	var body struct {
+		Object            string          `json:"object"`
+		ID                string          `json:"id"`
+		Status            string          `json:"status"`
+		Error             json.RawMessage `json:"error"`
+		IncompleteDetails struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details"`
+	}
+	if json.Unmarshal(data, &body) != nil || body.Object != "" && body.Object != "response" {
+		return nil
+	}
+	subject := "Response"
+	if body.ID != "" {
+		subject += " " + body.ID
+	}
+	switch body.Status {
+	case "failed":
+		var detail struct {
+			Code    string `json:"code"`
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(body.Error, &detail)
+		message := subject + " failed"
+		if detail.Message != "" {
+			message += ": " + detail.Message
+		}
+		return &APIError{Code: firstNonEmpty(detail.Code, detail.Type, "response.failed"), Message: message, ResponseStatus: body.Status}
+	case "incomplete":
+		message := subject + " is incomplete"
+		if body.IncompleteDetails.Reason != "" {
+			message += ": " + body.IncompleteDetails.Reason
+		}
+		return &APIError{Code: "response.incomplete", Message: message, ResponseStatus: body.Status}
+	case "cancelled":
+		return &APIError{Code: "response.cancelled", Message: subject + " was cancelled", ResponseStatus: body.Status}
+	}
+	return nil
 }
 
 func allowedPath(method, path string) bool {

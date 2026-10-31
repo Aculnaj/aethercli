@@ -78,6 +78,7 @@ use the environment variable when an unattended process must avoid those dialogs
 ```sh
 aethercli models --json
 aethercli models list --all --json
+aethercli models list --endpoint chat/completions --capability tool_calling --json
 aethercli status --offline --json
 aethercli doctor --json
 aethercli usage --period 7 --json
@@ -89,7 +90,9 @@ aethercli config set default-model MODEL_ID --dry-run --json
 
 Replace `MODEL_ID` with an ID returned by the live catalog. `models --json`
 retains its existing array of chat models; `models list --all` includes other
-endpoints. `doctor` and online `status` use only GET requests to `/models` and
+endpoints. `--capability` requires `--endpoint` and matches only the catalog's
+per-endpoint value `"supported"`; `unknown`, `unsupported` and missing values
+never match. `doctor` and online `status` use only GET requests to `/models` and
 `/usage`; neither sends a paid provider request or changes local state.
 `usage` calls `/v1/usage`; `budget` calls `/v1/budget-alerts`. Backend reports,
 coverage, scopes and forecast labels are retained without invented totals.
@@ -146,7 +149,9 @@ cat request.json | aethercli api --endpoint responses --request - --stream
 
 The endpoint or protocol is required. No automatic retries or fallback calls are
 made. Streaming forwards SSE, detects server errors after partial output, and
-returns a nonzero status for truncated streams.
+returns a nonzero status for truncated streams. A non-streamed Responses object
+with HTTP 200 but `status` `failed`, `incomplete` or `cancelled` is also an error
+(exit 6, or 4 for a rate-limit code) with an empty stdout.
 
 The explicit sandbox command always uses `/v1/sandbox/*` and `aether-sandbox`:
 

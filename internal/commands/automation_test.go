@@ -428,21 +428,66 @@ func TestSandboxDisabledDoesNotFallback(t *testing.T) {
 }
 func TestCatalogOptionalMetadataAndFilters(t *testing.T) {
 	deps, out, errOut := testServerDeps(t, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"data":[{"id":"chat-yes","owned_by":"Provider","endpoint":"/v1/chat/completions","input_cost":2.5,"capabilities":{"tools":true,"future":{"mode":"new"}}},{"id":"chat-unknown","endpoint":"/v1/chat/completions"},{"id":"image","endpoint":"/v1/images/generations"}]}`)
+		fmt.Fprint(w, `{"data":[
+			{"id":"chat-yes","owned_by":"Provider","endpoint":"/v1/chat/completions","supported_endpoints":["/v1/chat/completions","/v1/responses"],"input_cost":2.5,"capabilities_version":1,"capabilities":{"/v1/chat/completions":{"tool_calling":"supported","structured_outputs":{"json_schema":"supported"},"modalities":{"input":{"text":"supported","image":"unknown"}}},"/v1/responses":{"tool_calling":"unsupported"},"/v1/responses/compact":{"tool_calling":"unsupported"}}},
+			{"id":"chat-unsupported","endpoint":"/v1/chat/completions","capabilities_version":1,"capabilities":{"/v1/chat/completions":{"tool_calling":"unsupported","structured_outputs":{"json_schema":"supported"}}}},
+			{"id":"chat-unknown","endpoint":"/v1/chat/completions","capabilities_version":1,"capabilities":{"/v1/chat/completions":{"tool_calling":"unknown"}}},
+			{"id":"chat-legacy-true","endpoint":"/v1/chat/completions","capabilities":{"tool_calling":true,"tools":true}},
+			{"id":"chat-missing","endpoint":"/v1/chat/completions"},
+			{"id":"image","endpoint":"/v1/images/generations"}]}`)
 	})
 	for _, tc := range []struct {
-		args  []string
-		count int
-	}{{[]string{"models"}, 2}, {[]string{"models", "list", "--all"}, 3}, {[]string{"models", "list", "--capability", "tools"}, 1}, {[]string{"models", "list", "--capability", "future"}, 0}, {[]string{"models", "list", "--provider", "provider"}, 1}, {[]string{"models", "list", "--endpoint", "images/generations"}, 1}, {[]string{"models", "list", "--search", "unknown"}, 1}} {
+		args []string
+		ids  string
+	}{
+		{[]string{"models"}, "chat-yes,chat-unsupported,chat-unknown,chat-legacy-true,chat-missing"},
+		{[]string{"models", "list", "--all"}, "chat-yes,chat-unsupported,chat-unknown,chat-legacy-true,chat-missing,image"},
+		{[]string{"models", "list", "--endpoint", "chat/completions", "--capability", "tool_calling"}, "chat-yes"},
+		{[]string{"models", "list", "--endpoint", "/v1/chat/completions", "--capability", "tool_calling"}, "chat-yes"},
+		{[]string{"models", "list", "--endpoint", "/chat/completions", "--capability", "tool_calling"}, "chat-yes"},
+		{[]string{"models", "list", "--endpoint", "chat/completions", "--capability", "structured_outputs.json_schema"}, "chat-yes,chat-unsupported"},
+		{[]string{"models", "list", "--endpoint", "chat/completions", "--capability", "tool_calling", "--capability", "structured_outputs.json_schema"}, "chat-yes"},
+		{[]string{"models", "list", "--endpoint", "chat/completions", "--capability", "modalities.input.text"}, "chat-yes"},
+		{[]string{"models", "list", "--endpoint", "chat/completions", "--capability", "modalities.input.image"}, ""},
+		{[]string{"models", "list", "--endpoint", "chat/completions", "--capability", "tools"}, ""},
+		{[]string{"models", "list", "--endpoint", "responses", "--capability", "tool_calling"}, ""},
+		{[]string{"models", "list", "--endpoint", "messages", "--capability", "tool_calling"}, ""},
+		{[]string{"models", "list", "--endpoint", "responses"}, "chat-yes"},
+		{[]string{"models", "list", "--endpoint", "responses/compact"}, "chat-yes"},
+		{[]string{"models", "list", "--provider", "provider"}, "chat-yes"},
+		{[]string{"models", "list", "--endpoint", "images/generations"}, "image"},
+		{[]string{"models", "list", "--search", "unknown"}, "chat-unknown"},
+	} {
 		out.Reset()
 		errOut.Reset()
 		args := append(tc.args, "--json")
 		if exit := runCommand(deps, args...); exit != 0 {
-			t.Fatalf("exit=%d %s", exit, errOut)
+			t.Fatalf("args=%v exit=%d %s", args, exit, errOut)
 		}
 		var models []api.Model
-		if json.Unmarshal(out.Bytes(), &models) != nil || len(models) != tc.count {
+		if json.Unmarshal(out.Bytes(), &models) != nil {
 			t.Fatalf("args=%v out=%s", args, out)
+		}
+		ids := make([]string, 0, len(models))
+		for _, m := range models {
+			ids = append(ids, m.ID)
+		}
+		if strings.Join(ids, ",") != tc.ids {
+			t.Fatalf("args=%v ids=%v want %s", args, ids, tc.ids)
+		}
+	}
+	for _, args := range [][]string{
+		{"models", "list", "--capability", "tool_calling"},
+		{"models", "list", "--all", "--capability", "tool_calling"},
+		{"models", "list", "--endpoint", "chat/completions", "--capability", "structured_outputs"},
+		{"models", "list", "--endpoint", "chat/completions", "--capability", "max_output_tokens"},
+		{"models", "list", "--endpoint", "chat/completions", "--capability", "access.allowed"},
+		{"models", "list", "--endpoint", "https://example.invalid/v1/chat/completions"},
+	} {
+		out.Reset()
+		errOut.Reset()
+		if exit := runCommand(deps, append(args, "--json")...); exit != ExitUsage || out.Len() != 0 || errorEnvelope(t, errOut).Code != "invalid_arguments" {
+			t.Fatalf("args=%v exit=%d out=%s err=%s", args, exit, out, errOut)
 		}
 	}
 	out.Reset()
@@ -451,6 +496,40 @@ func TestCatalogOptionalMetadataAndFilters(t *testing.T) {
 		if json.Unmarshal(out.Bytes(), &m) != nil || m["input_cost"] != 2.5 {
 			t.Fatalf("exit=%d out=%s err=%s", exit, out, errOut)
 		}
+	}
+}
+
+func TestRawResponsesTerminalStatusExitsNonzero(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, code, status string
+		exit                     int
+	}{
+		{"failed", `{"id":"resp_fixture","object":"response","created_at":0,"model":"fixture","status":"failed","output":[],"error":{"code":"server_error","message":"Synthetic response failure"}}`, "server_error", "failed", ExitBackend},
+		{"failed_rate_limit", `{"object":"response","status":"failed","error":{"code":"rate_limit_exceeded","message":"slow down"}}`, "rate_limit_exceeded", "failed", ExitRateLimit},
+		{"incomplete", `{"object":"response","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}`, "response.incomplete", "incomplete", ExitBackend},
+		{"cancelled", `{"object":"response","status":"cancelled"}`, "response.cancelled", "cancelled", ExitBackend},
+		{"completed", `{"object":"response","status":"completed","output":[]}`, "", "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps, out, errOut := testServerDeps(t, func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, tc.body)
+			})
+			deps.In = strings.NewReader(`{"model":"fixture","input":"synthetic"}`)
+			exit := runCommand(deps, "api", "--protocol", "responses", "--request", "-", "--json")
+			if exit != tc.exit {
+				t.Fatalf("exit=%d out=%s err=%s", exit, out, errOut)
+			}
+			if tc.exit == 0 {
+				if errOut.Len() != 0 || !json.Valid(out.Bytes()) {
+					t.Fatalf("out=%s err=%s", out, errOut)
+				}
+				return
+			}
+			failure := errorEnvelope(t, errOut)
+			if out.Len() != 0 || failure.Code != tc.code || failure.ResponseStatus != tc.status || failure.HTTPStatus != 0 || failure.ExitCode != tc.exit || strings.Contains(errOut.String(), "sk-aetherapi-test") {
+				t.Fatalf("failure=%+v out=%s err=%s", failure, out, errOut)
+			}
+		})
 	}
 }
 
